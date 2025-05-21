@@ -4134,7 +4134,7 @@ the ActiveFabric will not post items to it anymore.
 
 .. _recipes-markup-your-event-processor:
 
-Augmentng your ActiveObject
+Augmenting your ActiveObject
 ---------------------------
 
 It is a bad idea to add variables to the state methods, instead augment your

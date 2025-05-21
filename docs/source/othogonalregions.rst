@@ -144,6 +144,7 @@ We will verify that our design works by:
   condition for ``S22`` is run then the exit condition for Region S2 is run.
   After the ``p`` region has been exited, the statechart will ultimately land in
   the ``outer_state``.
+* posting a ``to_p`` and confirm that both ``S11`` and ``S21`` are eventually entered.
 * re-posting ``e4`` and then ``e1`` with the same expected behaviour listed above.
 * posting an ``e2`` event which while S1 Region is in its final state and the S2
   region is in its ``S22`` state.  This ``e2`` event will cause the S2 Region
@@ -250,7 +251,7 @@ To view the instrumentation as the code is running:
 
 .. code-block:: shell
 
-  tail -f ./examaples/xml_chart.log.
+  tail -f ./examples/xml_chart.log.
 
 Now I will do a walk through of the code starting from the orthogonal regions
 then I will talk about the XMLChart (right to left on the diagram).
@@ -722,6 +723,7 @@ We can mentally verify that the bottom design matches the top design by:
   condition for ``S22`` is run then the exit condition for Region S2 is run.
   After the ``p`` region has been exited, the statechart will ultimately land in
   the ``outer_state``.
+* posting a ``to_p`` and confirm that both ``S11`` and ``S21`` are eventually entered.
 * re-posting ``e4`` and then ``e1`` with the same expected behaviour listed above.
 * posting an ``e2`` event which while S1 Region is in its final state and the S2
   region is in its ``S22`` state.  This ``e2`` event will cause the S2 Region
