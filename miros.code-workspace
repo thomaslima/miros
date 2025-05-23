@@ -1,0 +1,21 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"[python]": {
+			"editor.formatOnSave": false,
+			"editor.defaultFormatter": null,
+		},
+		"pylint.enabled": false,
+		"editor.formatOnSave": false,
+		"ruff.enable": false,
+		"files.trimTrailingWhitespace": false,
+		"files.trimTrailingWhitespaceInRegexAndStrings": false,
+		"files.trimFinalNewlines": false,
+		"files.insertFinalNewline": false,
+	}
+
+}

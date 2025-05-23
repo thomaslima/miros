@@ -1,6 +1,8 @@
-from collections import OrderedDict
-from miros.singleton import SingletonDecorator
 import json
+from collections import OrderedDict
+from typing import Type
+
+from miros.singleton import SingletonDecorator
 
 
 # Not intended for export
@@ -163,13 +165,13 @@ Defining the signals used by this package and all of the packages that
 reference it.  Think of this as a singleton or a growing enumeration.
 """
 # Signal is a singleton
-Signal = SingletonDecorator(SignalSource)
+Signal: Type[SignalSource] = SingletonDecorator(SignalSource)
 signals_exist = "signals" in locals()
 if signals_exist is False:
     signals = Signal()
 
 # ReturnStatus is a singleton
-ReturnStatus = SingletonDecorator(ReturnStatusSource)
+ReturnStatus: Type[ReturnStatusSource] = SingletonDecorator(ReturnStatusSource)
 status_exist = "return_status" in locals()
 if status_exist is False:
     return_status = ReturnStatus()

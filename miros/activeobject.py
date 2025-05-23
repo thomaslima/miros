@@ -8,6 +8,7 @@ from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
 from threading import Thread
+from typing import Optional
 
 from miros.event import Event as HsmEvent
 from miros.event import Signal, signals
@@ -672,7 +673,7 @@ class ActiveObject(HsmWithQueues):
           ao.post_fifo(Event(signal=signals.A))
 
         Example create a short lived thread to post a one-shot event in one second:
-          thread_id = ao.post_fifo(Event(signal=signals.A), period=1.0, time=1, deferred=True)
+          thread_id = ao.post_fifo(Event(signal=signals.A), period=1.0, times=1, deferred=True)
 
           # to cancel this one shot
           ao.cancel_event(thread_id)
@@ -698,7 +699,13 @@ class ActiveObject(HsmWithQueues):
             thread_id = self.__post_event(e, times, period, deferred, queue_type="fifo")
         return thread_id
 
-    def post_lifo(self, e, period=None, times=None, deferred=None):
+    def post_lifo(
+        self,
+        e,
+        period: Optional[float] = None,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ):
         """post an event, or events to the lifo queue
 
         Example of posting a single event into the lifo queue:
@@ -1124,7 +1131,7 @@ class ActiveObject(HsmWithQueues):
 
 class Factory(ActiveObject):
     class StateMethodBlueprint:
-        def __init__(self, name, ao):
+        def __init__(self, name: str, ao: ActiveObject):
             self.name = name
             self.state_method = state_method_template(name)
             self.ao = ao
@@ -1141,7 +1148,7 @@ class Factory(ActiveObject):
         self.name = name
         self.states = {}
 
-    def create(self, state=None):
+    def create(self, state=None) -> StateMethodBlueprint:
         """
         This will allow the Factory to create different things and attach them to
         itself, for now it can only create states.

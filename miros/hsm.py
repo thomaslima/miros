@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
+import inspect
+import pprint
 import re
 import sys
-import pprint
-import inspect
 import traceback  # try not use this if you can avoid it (it's fragile)
-from copy import copy
-from functools import wraps
-from datetime import datetime as stdlib_datetime
+from collections import deque, namedtuple
 from contextlib import contextmanager
-from collections import namedtuple, deque
-from miros.event import signals, return_status, Event
+from copy import copy
+from datetime import datetime as stdlib_datetime
+from functools import wraps
+
+from miros.event import Event, return_status, signals
 
 """
 This module provides a hierarchical state machine event class (HsmEventProcessor), and an
@@ -1408,7 +1409,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
         self.defer_queue.append(e)
 
     @append_recall_to_spy
-    def recall(self):
+    def recall(self) -> Event | None:
         e = None
         if len(self.defer_queue) != 0:
             e = self.defer_queue.popleft()
