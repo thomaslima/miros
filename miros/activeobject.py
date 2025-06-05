@@ -69,7 +69,7 @@ class InstrumenationWriterClass:
     def start(self):
         self._event.set()
 
-        def thread_runner(self):
+        def thread_runner(self: InstrumenationWriterClass):
             while self._event.is_set():
                 # i is an Instrumentation namedtuple
                 i = self._queue.get()
@@ -763,7 +763,7 @@ class ActiveObject(HsmWithQueues):
         except:
             self.locking_deque = LockingDeque()
 
-        def start_thread(self):
+        def start_thread(self: ActiveObject):
             """Starts an active object -- called within __start
 
             This will start an active object and the task fabric
@@ -813,7 +813,12 @@ class ActiveObject(HsmWithQueues):
         for event in events_with_their_own_threads:
             self.cancel_events(event)
 
-    def run_event(self, task_event, fabric_task_event, queue):
+    def run_event(
+        self,
+        task_event: ThreadEvent,
+        fabric_task_event: FiberThreadEvent,
+        queue: LockingDeque,
+    ):
         """The active object threading function.
 
         If this statechart has not been stopped and the active fabric hasn't been
