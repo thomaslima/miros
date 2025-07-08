@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import datetime as stdlib_datetime
 from functools import wraps
+from typing import Callable, Generic, TypeVar
 
 from miros.event import Event, return_status, signals
 
@@ -341,7 +342,14 @@ def append_queue_reflection_after_start(fn):
     return _append_queue_reflection_after_start
 
 
-class Attribute:
+HSM_T_co = TypeVar("HSM_T", bound="HsmEventProcessor", covariant=True)
+
+State_T = Callable[[HSM_T_co, "Event"], int]
+
+
+class Attribute(Generic[HSM_T_co]):
+    fun: Callable[[HSM_T_co, "Event"], int]
+
     def __init__(self):
         pass
 
@@ -350,7 +358,7 @@ class HsmTopologyException(Exception):
     pass
 
 
-class HsmEventProcessor:
+class HsmEventProcessor(Generic[HSM_T_co]):
     SPY_RING_BUFFER_SIZE = 500
     TRC_RING_BUFFER_SIZE = 500
     RTC_RING_BUFFER_SIZE = 250
@@ -359,14 +367,14 @@ class HsmEventProcessor:
         # making the name space common
         """set initial state of the"""
         # used by the event processor
-        self.state = Attribute()
-        self.temp = Attribute()
+        self.state: Attribute[HSM_T_co] = Attribute()
+        self.temp: Attribute[HSM_T_co] = Attribute()
         self.event = Attribute()
 
         # this is useful if you instrument your event processor
         self.event.ignored = False
 
-    def start_at(self, initial_state):
+    def start_at(self, initial_state: State_T[HSM_T_co]):
         """
         hsm = HsmEventProcessor()
         # build it
