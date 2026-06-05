@@ -192,6 +192,8 @@ def spy_on(fn: StateFn_T) -> StateFn_T:
 
     @wraps(fn)
     def _spy_on(chart: "InstrumentedHsmEventProcessor", *args: Event) -> int | str:
+        # variadic to tolerate state handlers invoked either as fn(chart, e) or
+        # with trailing positional args; the event is always the last argument.
         chart.spied_on = True
         if len(args) == 1:
             e = args[0]

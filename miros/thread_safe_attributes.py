@@ -79,7 +79,14 @@ class ThreadSafeAttribute:
 
 
 class MetaThreadSafeAttributes(type):
-    def __init__(cls, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        cls,
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, Any],
+        /,
+        **kwargs: Any,
+    ) -> None:
         """Build thread safe attributes"""
         # _attributes is an optional class-level list defined by user subclasses;
         # getattr is load-bearing here: the metaclass genuinely introspects an
@@ -88,4 +95,4 @@ class MetaThreadSafeAttributes(type):
         if attributes is not None:
             for name in list(set(attributes)):
                 setattr(cls, name, ThreadSafeAttribute(initial_value=0))
-        super().__init__(*args, **kwargs)
+        super().__init__(name, bases, namespace, **kwargs)
