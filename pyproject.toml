@@ -38,3 +38,11 @@ packages = ["miros"]
 
 [tool.setuptools.package-data]
 miros = ["py.typed"]
+
+[tool.pyright]
+# The miros package is fully annotated and type-checks cleanly under strict mode.
+# Scope strict checking to the package itself (the examples/ and test/ trees are
+# intentionally untyped demos/specs).
+include = ["miros"]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"
