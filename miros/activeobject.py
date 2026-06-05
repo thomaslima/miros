@@ -8,13 +8,25 @@ from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import Optional
+from typing import Any, Callable, Literal, Optional, TypeAlias, TypeVar, cast, overload
 
 from miros.event import Event as HsmEvent
 from miros.event import Signal, signals
 
+# A queue discipline for posted/subscribed events.
+QueueType: TypeAlias = Literal["fifo", "lifo"]
+# Something that identifies an event: a full event, or a signal number/name.
+EventOrSignal: TypeAlias = "HsmEvent | int | str"
+# A signature-preserving TypeVar for instrumentation/decorator helpers.
+_F = TypeVar("_F", bound=Callable[..., Any])
+
 # from this package
-from miros.hsm import HsmWithQueues, return_status, state_method_template
+from miros.hsm import (
+    HsmEventProcessor,
+    HsmWithQueues,
+    return_status,
+    state_method_template,
+)
 from miros.singleton import SingletonDecorator
 from miros.thread_safe_attributes import MetaThreadSafeAttributes
 
@@ -503,7 +515,9 @@ class ActiveObjectOutOfPostedEventResources(Exception):
 
 
 class ActiveObject(HsmWithQueues):
-    def __init__(self, name=None, instrumented=None):
+    def __init__(
+        self, name: Optional[str] = None, instrumented: Optional[bool] = None
+    ) -> None:
         if instrumented is None:
             instrumented = True
 
@@ -557,9 +571,8 @@ class ActiveObject(HsmWithQueues):
 
         self.last_live_trace_datetime = len(self.full.trace)
 
-    def top(self, *args):
+    def top(self, chart: HsmEventProcessor, event: HsmEvent) -> int:
         """top most state given to all HSMs; treat it as an outside function"""
-        chart, event = args[0], args[1]
         if event.signal == signals.SUBSCRIBE_META_SIGNAL:
             self._subscribe(event.payload.event_or_signal, event.payload.queue_type)
             status = return_status.HANDLED
@@ -567,7 +580,7 @@ class ActiveObject(HsmWithQueues):
             self._publish(event.payload.event, event.payload.priority)
             status = return_status.HANDLED
         else:
-            status = super().top(*args)
+            status = super().top(chart, event)
         return status
 
     def __thread_running(self):
@@ -577,7 +590,7 @@ class ActiveObject(HsmWithQueues):
             result = True if self.thread.is_alive() else False
         return result
 
-    def append_subscribe_to_spy(fn):
+    def append_subscribe_to_spy(fn: _F) -> _F:
         """instrument the full spy with our subscription request"""
 
         @wraps(fn)
@@ -592,12 +605,11 @@ class ActiveObject(HsmWithQueues):
                 )
                 return fn(self, e_or_s, queue_type)
 
-        return _append_subscribe_to_spy
+        return cast(_F, _append_subscribe_to_spy)
 
-    def subscribe(self, event_or_signal, queue_type=None):
-        if queue_type is None:
-            queue_type = "fifo"
-
+    def subscribe(
+        self, event_or_signal: EventOrSignal, queue_type: QueueType = "fifo"
+    ) -> None:
         # If the thread has been started
         if self.__thread_running():
             # If we have already subscribed to this event, just return
@@ -615,7 +627,9 @@ class ActiveObject(HsmWithQueues):
         payload = SubscribeEvent(event_or_signal=event_or_signal, queue_type=queue_type)
         self.post_lifo(HsmEvent(signal=signals.SUBSCRIBE_META_SIGNAL, payload=payload))
 
-    def subscribed(self, event_or_signal, queue_type):
+    def subscribed(
+        self, event_or_signal: EventOrSignal, queue_type: QueueType
+    ) -> bool:
         result = (
             False
             if self.__thread_running() is False
@@ -628,7 +642,7 @@ class ActiveObject(HsmWithQueues):
     def _subscribe(self, event_or_signal, queue_type):
         self.fabric.subscribe(self.queue, event_or_signal, queue_type)
 
-    def append_publish_to_spy(fn):
+    def append_publish_to_spy(fn: _F) -> _F:
         """instrument the rtc spy with our publish event"""
 
         @wraps(fn)
@@ -639,12 +653,9 @@ class ActiveObject(HsmWithQueues):
                 )
                 return fn(self, e, priority)
 
-        return _append_publish_to_spy
+        return cast(_F, _append_publish_to_spy)
 
-    def publish(self, event, priority=None):
-        if priority is None:
-            priority = 1000
-
+    def publish(self, event: HsmEvent, priority: int = 1000) -> None:
         # If the thread has been started, short-circuit the posting of an event; the
         # task is running, just call _publish
         if self.__thread_running():
@@ -666,7 +677,26 @@ class ActiveObject(HsmWithQueues):
             priority = 1000
         self.fabric.publish(event, priority)
 
-    def post_fifo(self, e, period=None, times=None, deferred=None):
+    @overload
+    def post_fifo(
+        self, e: HsmEvent, period: None = None, times: None = None, deferred: None = None
+    ) -> None: ...
+    @overload
+    def post_fifo(
+        self,
+        e: HsmEvent,
+        period: float,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ) -> str: ...
+
+    def post_fifo(
+        self,
+        e: HsmEvent,
+        period: Optional[float] = None,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ) -> Optional[str]:
         """post an event, or events to the fifo queue
 
         Example of posting a single event into the fifo queue:
@@ -699,13 +729,26 @@ class ActiveObject(HsmWithQueues):
             thread_id = self.__post_event(e, times, period, deferred, queue_type="fifo")
         return thread_id
 
+    @overload
+    def post_lifo(
+        self, e: HsmEvent, period: None = None, times: None = None, deferred: None = None
+    ) -> None: ...
+    @overload
     def post_lifo(
         self,
-        e,
+        e: HsmEvent,
+        period: float,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ) -> str: ...
+
+    def post_lifo(
+        self,
+        e: HsmEvent,
         period: Optional[float] = None,
         times: Optional[int] = None,
         deferred: Optional[bool] = None,
-    ):
+    ) -> Optional[str]:
         """post an event, or events to the lifo queue
 
         Example of posting a single event into the lifo queue:
@@ -739,7 +782,7 @@ class ActiveObject(HsmWithQueues):
             thread_id = self.__post_event(e, times, period, deferred, queue_type="lifo")
         return thread_id
 
-    def start_at(self, initial_state):
+    def start_at(self, initial_state: Callable[..., int]) -> None:
         """start the active object at a given state and begin its task"""
         if self.name is None:
             function_name = initial_state(
@@ -1037,7 +1080,7 @@ class ActiveObject(HsmWithQueues):
 
         return thread.name
 
-    def cancel_event(self, uuid=None):
+    def cancel_event(self, uuid: Optional[str] = None) -> None:
         """
         This will cancel an event thread that was created using the __post_event api.
         The original call to the __post_event api would have returned the uuid needed
@@ -1070,7 +1113,7 @@ class ActiveObject(HsmWithQueues):
             else:
                 self.posted_events_queue.rotate(1)
 
-    def cancel_events(self, e):
+    def cancel_events(self, e: HsmEvent) -> None:
         """
         This will cancel all events that have the same signal name as e, that were
         posted using the __post_event.
@@ -1108,14 +1151,18 @@ class ActiveObject(HsmWithQueues):
             else:
                 self.posted_events_queue.rotate(1)
 
-    def register_live_spy_callback(self, live_spy_callback):
+    def register_live_spy_callback(
+        self, live_spy_callback: Callable[[str], None]
+    ) -> None:
         # enclose the live_spy_callback
         def _live_spy_callback(line):
             self.writer._print(fn=live_spy_callback, content=line)
 
         self.live_spy_callback = _live_spy_callback
 
-    def register_live_trace_callback(self, live_trace_callback):
+    def register_live_trace_callback(
+        self, live_trace_callback: Callable[[str], None]
+    ) -> None:
         # enclose the live_trace_callback
         def _live_trace_callback(line):
             self.writer._print(fn=live_trace_callback, content=line)

@@ -1,12 +1,19 @@
+from __future__ import annotations
+
 import json
 from collections import OrderedDict
-from typing import Type
+from typing import Any, Type, TypeAlias
 
 from miros.singleton import SingletonDecorator
 
+# A signal identifier: either a signal's numeric id or its string name.
+SignalId: TypeAlias = "int | str"
+# An event's arbitrary, user-supplied payload.
+Payload: TypeAlias = Any
+
 
 # Not intended for export
-class OrderedDictWithParams(OrderedDict):
+class OrderedDictWithParams(OrderedDict[str, int]):
     """
     If your subclass <name_of_subclass> has the following init:
       def __init__(self,*args,**kwargs):
@@ -31,13 +38,13 @@ class OrderedDictWithParams(OrderedDict):
     as well as the clean interface to the attribute.
     """
 
-    def append(self, string):
+    def append(self, string: str) -> None:
         if string in self:
             return
         else:
             self[string] = len(self) + 1
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> int:
         return self[str(item)]
 
 
@@ -112,16 +119,19 @@ class SignalSource(OrderedDictWithParams):
         self["SUBSCRIBE_META_SIGNAL"] = 9
         self["PUBLISH_META_SIGNAL"] = 10
 
-        self.highest_inner_signal = len(self)
+        # highest reserved (framework-internal) signal number; user signals
+        # appended later are strictly greater, so this is the public threshold
+        # to test a signal against instead of hardcoding a literal.
+        self.highest_inner_signal: int = len(self)
 
-    def append(self, string):
+    def append(self, string: str) -> None:
         if string in self:
             return
         else:
             self[string] = len(self) + 1
 
-    def is_inner_signal(self, other):
-        def is_number_an_internal_signal(number):
+    def is_inner_signal(self, other: SignalId) -> bool:
+        def is_number_an_internal_signal(number: int) -> bool:
             result = False
             # if number in list(self.values())[0:self.SEARCH_FOR_SUPER_SIGNAL]:
             if number in list(self.values())[0 : self.highest_inner_signal]:
@@ -142,14 +152,14 @@ class SignalSource(OrderedDictWithParams):
                 pass
         return result
 
-    def name_for_signal(self, signal):
+    def name_for_signal(self, signal: int) -> str:
         """
         get the name of a signal number as a string
         """
         signal_name = list(self.keys())[list(self.values()).index(signal)]
         return signal_name
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> int:
         value = None
         try:
             value = self[str(item)]
@@ -197,15 +207,15 @@ class Event(OrderedDictWithParams):
 
     """
 
-    def __init__(self, signal, payload=None):
+    def __init__(self, signal: SignalId, payload: Payload = None) -> None:
         global signals
 
-        self.payload = payload
+        self.payload: Payload = payload
 
         if signal in signals.values():
-            self.signal = signal
             for key, value in signals.items():
                 if value == signal:
+                    self.signal = value
                     self.signal_name = key
                     break
 
