@@ -405,7 +405,7 @@ class HsmEventProcessor:
         self.state_name = self.state.fun.__name__
         self.state_fn = self.state.fun
 
-    def top(self, *args: Any) -> int:
+    def top(self, chart: HsmEventProcessor, event: Event) -> int:
         """top most state given to all HSM; treat it as an outside function"""
         status = return_status.IGNORED
         return status
@@ -1423,10 +1423,24 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
 
     @append_fifo_to_spy
     def post_fifo(self, e: Event) -> str | None:
+        """Queue ``e`` for fifo processing; always returns ``None`` here.
+
+        The return type admits ``str`` because :class:`ActiveObject` overrides
+        this method to optionally return a thread id (used later to cancel the
+        post) when an event is scheduled to repeat via ``period``/``times``.
+        Declaring the base return as ``str | None`` keeps that override type
+        compatible.
+        """
         self.queue.append(e)
 
     @append_lifo_to_spy
     def post_lifo(self, e: Event) -> str | None:
+        """Queue ``e`` for lifo processing; always returns ``None`` here.
+
+        As with :meth:`post_fifo`, the return type admits ``str`` so the
+        :class:`ActiveObject` override that returns a thread id for periodic
+        posts stays type compatible.
+        """
         self.queue.appendleft(e)
 
     @append_defer_to_spy

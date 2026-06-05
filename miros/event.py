@@ -119,7 +119,10 @@ class SignalSource(OrderedDictWithParams):
         self["SUBSCRIBE_META_SIGNAL"] = 9
         self["PUBLISH_META_SIGNAL"] = 10
 
-        self.highest_inner_signal = len(self)
+        # highest reserved (framework-internal) signal number; user signals
+        # appended later are strictly greater, so this is the public threshold
+        # to test a signal against instead of hardcoding a literal.
+        self.highest_inner_signal: int = len(self)
 
     def append(self, string: str) -> None:
         if string in self:

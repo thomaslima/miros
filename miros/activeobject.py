@@ -21,7 +21,12 @@ EventOrSignal: TypeAlias = "HsmEvent | int | str"
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 # from this package
-from miros.hsm import HsmWithQueues, return_status, state_method_template
+from miros.hsm import (
+    HsmEventProcessor,
+    HsmWithQueues,
+    return_status,
+    state_method_template,
+)
 from miros.singleton import SingletonDecorator
 from miros.thread_safe_attributes import MetaThreadSafeAttributes
 
@@ -566,9 +571,8 @@ class ActiveObject(HsmWithQueues):
 
         self.last_live_trace_datetime = len(self.full.trace)
 
-    def top(self, *args: Any) -> int:
+    def top(self, chart: HsmEventProcessor, event: HsmEvent) -> int:
         """top most state given to all HSMs; treat it as an outside function"""
-        chart, event = args[0], args[1]
         if event.signal == signals.SUBSCRIBE_META_SIGNAL:
             self._subscribe(event.payload.event_or_signal, event.payload.queue_type)
             status = return_status.HANDLED
@@ -576,7 +580,7 @@ class ActiveObject(HsmWithQueues):
             self._publish(event.payload.event, event.payload.priority)
             status = return_status.HANDLED
         else:
-            status = super().top(*args)
+            status = super().top(chart, event)
         return status
 
     def __thread_running(self):
@@ -604,11 +608,8 @@ class ActiveObject(HsmWithQueues):
         return cast(_F, _append_subscribe_to_spy)
 
     def subscribe(
-        self, event_or_signal: EventOrSignal, queue_type: Optional[QueueType] = None
+        self, event_or_signal: EventOrSignal, queue_type: QueueType = "fifo"
     ) -> None:
-        if queue_type is None:
-            queue_type = "fifo"
-
         # If the thread has been started
         if self.__thread_running():
             # If we have already subscribed to this event, just return
@@ -654,10 +655,7 @@ class ActiveObject(HsmWithQueues):
 
         return cast(_F, _append_publish_to_spy)
 
-    def publish(self, event: HsmEvent, priority: Optional[int] = None) -> None:
-        if priority is None:
-            priority = 1000
-
+    def publish(self, event: HsmEvent, priority: int = 1000) -> None:
         # If the thread has been started, short-circuit the posting of an event; the
         # task is running, just call _publish
         if self.__thread_running():
