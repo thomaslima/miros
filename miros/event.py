@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
-from typing import Any, Type
+from typing import Any, Type, TypeAlias
 
 from miros.singleton import SingletonDecorator
+
+# A signal identifier: either a signal's numeric id or its string name.
+SignalId: TypeAlias = "int | str"
+# An event's arbitrary, user-supplied payload.
+Payload: TypeAlias = Any
 
 
 # Not intended for export
@@ -122,7 +127,7 @@ class SignalSource(OrderedDictWithParams):
         else:
             self[string] = len(self) + 1
 
-    def is_inner_signal(self, other: int | str) -> bool:
+    def is_inner_signal(self, other: SignalId) -> bool:
         def is_number_an_internal_signal(number: int) -> bool:
             result = False
             # if number in list(self.values())[0:self.SEARCH_FOR_SUPER_SIGNAL]:
@@ -199,10 +204,10 @@ class Event(OrderedDictWithParams):
 
     """
 
-    def __init__(self, signal: int | str, payload: Any = None) -> None:
+    def __init__(self, signal: SignalId, payload: Payload = None) -> None:
         global signals
 
-        self.payload: Any = payload
+        self.payload: Payload = payload
 
         if signal in signals.values():
             for key, value in signals.items():

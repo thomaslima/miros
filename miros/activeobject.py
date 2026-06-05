@@ -8,10 +8,15 @@ from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional, TypeAlias, overload
 
 from miros.event import Event as HsmEvent
 from miros.event import Signal, signals
+
+# A queue discipline for posted/subscribed events.
+QueueType: TypeAlias = Literal["fifo", "lifo"]
+# Something that identifies an event: a full event, or a signal number/name.
+EventOrSignal: TypeAlias = "HsmEvent | int | str"
 
 # from this package
 from miros.hsm import HsmWithQueues, return_status, state_method_template
@@ -595,7 +600,7 @@ class ActiveObject(HsmWithQueues):
         return _append_subscribe_to_spy
 
     def subscribe(
-        self, event_or_signal: "HsmEvent | int | str", queue_type: Optional[str] = None
+        self, event_or_signal: EventOrSignal, queue_type: Optional[QueueType] = None
     ) -> None:
         if queue_type is None:
             queue_type = "fifo"
@@ -618,7 +623,7 @@ class ActiveObject(HsmWithQueues):
         self.post_lifo(HsmEvent(signal=signals.SUBSCRIBE_META_SIGNAL, payload=payload))
 
     def subscribed(
-        self, event_or_signal: "HsmEvent | int | str", queue_type: Optional[str]
+        self, event_or_signal: EventOrSignal, queue_type: QueueType
     ) -> bool:
         result = (
             False
@@ -670,6 +675,19 @@ class ActiveObject(HsmWithQueues):
             priority = 1000
         self.fabric.publish(event, priority)
 
+    @overload
+    def post_fifo(
+        self, e: HsmEvent, period: None = None, times: None = None, deferred: None = None
+    ) -> None: ...
+    @overload
+    def post_fifo(
+        self,
+        e: HsmEvent,
+        period: float,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ) -> str: ...
+
     def post_fifo(
         self,
         e: HsmEvent,
@@ -708,6 +726,19 @@ class ActiveObject(HsmWithQueues):
             # this will make another thread to post this event into our fifo
             thread_id = self.__post_event(e, times, period, deferred, queue_type="fifo")
         return thread_id
+
+    @overload
+    def post_lifo(
+        self, e: HsmEvent, period: None = None, times: None = None, deferred: None = None
+    ) -> None: ...
+    @overload
+    def post_lifo(
+        self,
+        e: HsmEvent,
+        period: float,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ) -> str: ...
 
     def post_lifo(
         self,
