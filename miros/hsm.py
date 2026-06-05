@@ -1150,7 +1150,7 @@ class InstrumentedHsmEventProcessor(HsmEventProcessor):
 
     @trace_on_start
     @spy_on_start
-    def start_at(self, initial_state):
+    def start_at(self, initial_state: Callable[..., int]) -> None:
         super().start_at(initial_state)
 
     def append_to_full_spy(fn: _F) -> _F:
@@ -1354,7 +1354,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
     @print_spy_after_at_start_if_live
     @print_trace_after_at_start_if_live
     @append_queue_reflection_after_start
-    def start_at(self, initial_state):
+    def start_at(self, initial_state: Callable[..., int]) -> None:
         if self.instrumented:
             super().start_at(initial_state)
         else:

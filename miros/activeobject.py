@@ -94,7 +94,7 @@ class InstrumenationWriterClass:
         self._thread = Thread(target=thread_runner, args=(self,), daemon=True)
         self._thread.start()
 
-    def _print(self, fn, content):
+    def _print(self, fn: Callable[[str], None], content: str) -> None:
         self._queue.put(Instrumention(fn=fn, content=content))
 
     def is_alive(self):
