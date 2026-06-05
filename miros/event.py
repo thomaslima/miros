@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
-from typing import Any, Type, TypeAlias
+from typing import Any, TypeAlias
 
 from miros.singleton import SingletonDecorator
 
@@ -65,7 +65,7 @@ class ReturnStatusSource(OrderedDictWithParams):
 
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self) -> None:
         self["SUPER"] = 1
         self["SUPER_SUB"] = 2
         self["UNHANDLED"] = 3
@@ -107,7 +107,7 @@ class SignalSource(OrderedDictWithParams):
 
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self) -> None:
         self["ENTRY_SIGNAL"] = 1
         self["EXIT_SIGNAL"] = 2
         self["INIT_SIGNAL"] = 3
@@ -145,7 +145,7 @@ class SignalSource(OrderedDictWithParams):
                 result = is_number_an_internal_signal(other)
             except:
                 pass
-        elif isinstance(other, int):
+        else:
             try:
                 result = is_number_an_internal_signal(other)
             except:
@@ -175,13 +175,13 @@ Defining the signals used by this package and all of the packages that
 reference it.  Think of this as a singleton or a growing enumeration.
 """
 # Signal is a singleton
-Signal: Type[SignalSource] = SingletonDecorator(SignalSource)
+Signal: SingletonDecorator[SignalSource] = SingletonDecorator(SignalSource)
 signals_exist = "signals" in locals()
 if signals_exist is False:
     signals = Signal()
 
 # ReturnStatus is a singleton
-ReturnStatus: Type[ReturnStatusSource] = SingletonDecorator(ReturnStatusSource)
+ReturnStatus: SingletonDecorator[ReturnStatusSource] = SingletonDecorator(ReturnStatusSource)
 status_exist = "return_status" in locals()
 if status_exist is False:
     return_status = ReturnStatus()
@@ -207,6 +207,12 @@ class Event(OrderedDictWithParams):
 
     """
 
+    # Declare real instance attributes so pyright sees them as typed members
+    # rather than routing accesses through OrderedDictWithParams.__getattr__.
+    payload: Payload
+    signal: int
+    signal_name: str
+
     def __init__(self, signal: SignalId, payload: Payload = None) -> None:
         global signals
 
@@ -227,7 +233,7 @@ class Event(OrderedDictWithParams):
         else:
             raise RuntimeError("signal must be of type string or Signal")
 
-    def has_payload(self):
+    def has_payload(self) -> bool:
         """
         Example:
           event = Event(signal=signals.Mary, payload=[1,2,3])
@@ -238,7 +244,7 @@ class Event(OrderedDictWithParams):
             result = False
         return result
 
-    def __str__(self):
+    def __str__(self) -> str:
         """
         Provides a string representation of an event object.
 
@@ -252,7 +258,7 @@ class Event(OrderedDictWithParams):
             result = "{}::<{}>".format(self.signal_name, str(self.payload))
         return result
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
         Provides an internal representation of an event object.
 
@@ -273,7 +279,7 @@ class Event(OrderedDictWithParams):
         return result
 
     @staticmethod
-    def dumps(event):
+    def dumps(event: "Event") -> str:
         """
         Required for serialization prior to sending an event across an IO
         stream/networks.
@@ -308,7 +314,7 @@ class Event(OrderedDictWithParams):
         return json.dumps(event_as_dict)
 
     @staticmethod
-    def loads(json_event):
+    def loads(json_event: str) -> "Event":
         """
         De-serializes a serialized Event object.  An event object can not be
         serialized using pickle due to it's dynamic nature.  For this reason the
@@ -322,7 +328,7 @@ class Event(OrderedDictWithParams):
           print(event) # => Mary::<>
 
         """
-        event_as_dict = json.loads(json_event)
+        event_as_dict: dict[str, Any] = json.loads(json_event)
         signal_name = event_as_dict["signal_name"]
         payload = event_as_dict["payload"]
 
