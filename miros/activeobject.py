@@ -39,6 +39,7 @@ from miros.hsm import (
     HsmEventProcessor,
     HsmWithQueues,
     State_T,
+    reflect_name,
     return_status,
     state_method_template,
 )
@@ -48,6 +49,18 @@ from miros.thread_safe_attributes import MetaThreadSafeAttributes
 
 def pp(item: object) -> None:
     pprint(item)
+
+
+def _signal_name(event_or_signal: EventOrSignal) -> str:
+    """Resolve an event, signal number, or signal name to its signal name (str)."""
+    if type(event_or_signal) == HsmEvent:
+        return event_or_signal.signal_name
+    elif type(event_or_signal) == int:
+        return signals.name_for_signal(event_or_signal)
+    else:
+        # by EventOrSignal, anything that is not an Event or signal number is the
+        # signal name itself (a str); type() == checks don't narrow the else branch.
+        return cast(str, event_or_signal)
 
 
 # Add to different signals to signal if they aren't there already
@@ -429,15 +442,7 @@ class ActiveFabricSource:
         def _subscribe(
             internal_queue: Dict[str, List[EventQueue]], signal: EventOrSignal
         ) -> Optional[str]:
-            signal_name: str
-            if type(signal) == HsmEvent:
-                signal_name = signal.signal_name
-            elif type(signal) == int:
-                signal_name = signals.name_for_signal(signal)
-            else:
-                # not an Event or signal number, so by EventOrSignal it is the
-                # signal name itself (a str); type() == checks don't narrow.
-                signal_name = cast(str, signal)
+            signal_name = _signal_name(signal)
 
             if signal_name in internal_queue:
                 registry = internal_queue[signal_name]
@@ -465,15 +470,7 @@ class ActiveFabricSource:
     def subscribed(
         self, event_or_signal: EventOrSignal, queue_type: QueueType
     ) -> bool:
-        signal_name: str
-        if type(event_or_signal) == HsmEvent:
-            signal_name = event_or_signal.signal_name
-        elif type(event_or_signal) == int:
-            signal_name = signals.name_for_signal(event_or_signal)
-        else:
-            # not an Event or signal number, so by EventOrSignal it is the
-            # signal name itself (a str); type() == checks don't narrow.
-            signal_name = cast(str, event_or_signal)
+        signal_name = _signal_name(event_or_signal)
 
         if queue_type == "fifo":
             internal_queue = self.fifo_subscriptions
@@ -681,15 +678,7 @@ class ActiveObject(HsmWithQueues):
             e_or_s: EventOrSignal,
             queue_type: QueueType = "fifo",
         ) -> None:
-            signal_name: str
-            if type(e_or_s) == HsmEvent:
-                signal_name = e_or_s.signal_name
-            elif type(e_or_s) == int:
-                signal_name = signals.name_for_signal(e_or_s)
-            else:
-                # not an Event or signal number, so by EventOrSignal it is the
-                # signal name itself (a str); type() == checks don't narrow.
-                signal_name = cast(str, e_or_s)
+            signal_name = _signal_name(e_or_s)
             if self.instrumented:
                 self.scribble(
                     "SUBSCRIBING TO:({}, TYPE:{})".format(signal_name, queue_type)
@@ -881,13 +870,7 @@ class ActiveObject(HsmWithQueues):
     def start_at(self, initial_state: "State_T[ActiveObject]") -> None:
         """start the active object at a given state and begin its task"""
         if self.name is None:
-            # A state handler answers a REFLECTION_SIGNAL with its own name (a
-            # str), even though its declared return type is the int status; this
-            # is the established reflection pattern in this library.
-            function_name = cast(
-                str,
-                initial_state(self, HsmEvent(signal=signals.REFLECTION_SIGNAL)),
-            )
+            function_name = reflect_name(initial_state, self)
             self.name = str(uuid.uuid5(uuid.NAMESPACE_DNS, function_name))[0:5]
         super().start_at(initial_state)
         self.__start()
