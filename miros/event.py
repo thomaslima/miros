@@ -65,7 +65,7 @@ class ReturnStatusSource(OrderedDictWithParams):
 
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self) -> None:
         self["SUPER"] = 1
         self["SUPER_SUB"] = 2
         self["UNHANDLED"] = 3
@@ -107,7 +107,7 @@ class SignalSource(OrderedDictWithParams):
 
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self) -> None:
         self["ENTRY_SIGNAL"] = 1
         self["EXIT_SIGNAL"] = 2
         self["INIT_SIGNAL"] = 3

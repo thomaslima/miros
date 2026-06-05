@@ -534,7 +534,7 @@ class LockingDeque:
 
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self) -> None:
         self.deque: "deque[HsmEvent]" = deque(maxlen=HsmWithQueues.QUEUE_SIZE)
         self.locking_queue: "Queue[str]" = Queue(maxsize=HsmWithQueues.QUEUE_SIZE)
 
