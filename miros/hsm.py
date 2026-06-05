@@ -343,12 +343,7 @@ def trace_on_start(fn: _F) -> _F:
                     start_state="top",
                     signal=None,
                     payload=None,
-                    # On a REFLECTION_SIGNAL a spied-on state handler returns its
-                    # own name (a str), not a status code.
-                    end_state=cast(
-                        str,
-                        self.temp.fun(self, Event(signal=signals.REFLECTION_SIGNAL)),
-                    ),
+                    end_state=reflect_name(self.temp.fun, self),
                 )
                 self.full.trace.append(t)
         return status
@@ -388,6 +383,17 @@ class State_T(Protocol[HSM_T_contra]):
     __name__: str
 
     def __call__(self, chart: HSM_T_contra, e: "Event", /) -> int: ...
+
+
+def reflect_name(fn: "State_T[HSM_T]", chart: HSM_T) -> str:
+    """Ask a state handler for its own name.
+
+    On a ``REFLECTION_SIGNAL`` a (``spy_on``-decorated) state handler returns its
+    own ``__name__`` as a ``str`` instead of an ``int`` status code.  That makes
+    the ``int`` -> ``str`` narrowing honest here, so this is the one place the cast
+    lives; every reflection call site goes through this helper.
+    """
+    return cast(str, fn(chart, Event(signal=signals.REFLECTION_SIGNAL)))
 
 
 class TraceTuple(NamedTuple):
@@ -1290,11 +1296,7 @@ class InstrumentedHsmEventProcessor(HsmEventProcessor):
                 # fn is append_to_full_spy
                 fn(self, e)
             else:
-                # On a REFLECTION_SIGNAL a spied-on handler returns its name (str).
-                start_state = cast(
-                    str,
-                    self.state.fun(self, Event(signal=signals.REFLECTION_SIGNAL)),
-                )
+                start_state = reflect_name(self.state.fun, self)
                 self.rtc.tuples.clear()
                 # fn is append_to_full_spy
                 fn(self, e)
@@ -1305,12 +1307,7 @@ class InstrumentedHsmEventProcessor(HsmEventProcessor):
                         start_state=start_state,
                         signal=signal,
                         payload="",
-                        end_state=cast(
-                            str,
-                            self.state.fun(
-                                self, Event(signal=signals.REFLECTION_SIGNAL)
-                            ),
-                        ),
+                        end_state=reflect_name(self.state.fun, self),
                     )
 
                     self.full.trace.append(t)
@@ -1496,9 +1493,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
 
     def current_state(self) -> str | None:
         if self.instrumented:
-            # On a REFLECTION_SIGNAL a spied-on handler returns its name (str).
-            cs = cast(str, self.state.fun(self, Event(signals.REFLECTION_SIGNAL)))
-            return cs
+            return reflect_name(self.state.fun, self)
         return None
 
     def dispatch(self, e: Event) -> None:
