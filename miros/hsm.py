@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import datetime as stdlib_datetime
 from functools import wraps
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, TypeVar, cast
 
 from miros.event import Event, return_status, signals
 
@@ -174,7 +174,10 @@ def spy_tuple(
     )
 
 
-def spy_on(fn):
+StateFn_T = TypeVar("StateFn_T", bound=Callable[..., int])
+
+
+def spy_on(fn: StateFn_T) -> StateFn_T:
     """Instrument a state handling method"""
 
     @wraps(fn)
@@ -222,7 +225,7 @@ def spy_on(fn):
         chart.rtc.tuples.append(sr)
         return status
 
-    return _spy_on
+    return cast(StateFn_T, _spy_on)
 
 
 def state_method_template(name):
@@ -707,7 +710,7 @@ class HsmEventProcessor(Generic[HSM_T_co]):
         self.state_name = t.__name__
         self.state_fn = t
 
-    def trans(self, fn):
+    def trans(self, fn: State_T[HSM_T_co]) -> int:
         """sets a new function target and returns that transition required by engine"""
         self.temp.fun = fn
         return return_status.TRAN
