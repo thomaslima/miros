@@ -12,13 +12,36 @@ from copy import copy
 from datetime import datetime as stdlib_datetime
 from functools import wraps
 from types import FunctionType
-from typing import Any, Callable, Generic, NamedTuple, Protocol, Self, TypeVar, cast
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    NamedTuple,
+    Protocol,
+    Self,
+    TypeGuard,
+    TypeVar,
+    cast,
+)
 
 from miros.event import Event, return_status, signals
 
 # A return_status code (e.g. return_status.HANDLED). The status enum is an
 # auto-numbering registry, so its members are plain ints rather than an Enum.
 ReturnStatusValue = int
+
+
+def _is_return_status(value: object) -> TypeGuard[ReturnStatusValue]:
+    """Narrowing predicate: whether a handler's return value is a status code.
+
+    Used by ``_require_status`` to narrow the widened ``object`` (a handler is
+    annotated ``-> int`` but may misbehave at runtime) back to ``int``.  A
+    ``TypeGuard`` (PEP 647) rather than ``TypeIs`` (PEP 742): ``typing.TypeIs``
+    needs Python 3.13, and this package targets 3.11 with no dependencies — and
+    here only the positive (post-guard) narrowing is needed, which ``TypeGuard``
+    provides.
+    """
+    return isinstance(value, int)
 
 # A signature-preserving TypeVar for instrumentation/decorator helpers, so that
 # the methods they wrap keep their precise signatures for type checkers.
@@ -501,15 +524,17 @@ class HsmEventProcessor:
     def _require_status(status: object, handler: object) -> int:
         """Validate that a state handler returned a status code.
 
-        State handlers are required to return a ``return_status`` int; one that
-        returns ``None`` is malformed.  We surface that as an ``HsmTopologyException``
-        naming the offending handler rather than letting the bad value propagate.
+        State handlers are annotated as returning a ``return_status`` int, but a
+        malformed one can return ``None`` (or any non-int) at runtime.  Surface
+        that as an ``HsmTopologyException`` naming the offending handler rather
+        than letting the bad value propagate.  The ``_is_return_status`` guard
+        narrows the widened ``object`` back to ``int`` with a real runtime check
+        (unlike an ``assert``, which ``python -O`` would strip).
         """
-        if status is None:
+        if not _is_return_status(status):
             raise HsmTopologyException(
                 "state handler {} is not returning a valid status".format(handler)
             )
-        assert isinstance(status, int)
         return status
 
     def init(self) -> None:
