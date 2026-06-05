@@ -8,7 +8,7 @@ from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import Callable, Literal, Optional, TypeAlias, overload
+from typing import Any, Callable, Literal, Optional, TypeAlias, TypeVar, cast, overload
 
 from miros.event import Event as HsmEvent
 from miros.event import Signal, signals
@@ -17,6 +17,8 @@ from miros.event import Signal, signals
 QueueType: TypeAlias = Literal["fifo", "lifo"]
 # Something that identifies an event: a full event, or a signal number/name.
 EventOrSignal: TypeAlias = "HsmEvent | int | str"
+# A signature-preserving TypeVar for instrumentation/decorator helpers.
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 # from this package
 from miros.hsm import HsmWithQueues, return_status, state_method_template
@@ -508,7 +510,9 @@ class ActiveObjectOutOfPostedEventResources(Exception):
 
 
 class ActiveObject(HsmWithQueues):
-    def __init__(self, name=None, instrumented=None):
+    def __init__(
+        self, name: Optional[str] = None, instrumented: Optional[bool] = None
+    ) -> None:
         if instrumented is None:
             instrumented = True
 
@@ -562,7 +566,7 @@ class ActiveObject(HsmWithQueues):
 
         self.last_live_trace_datetime = len(self.full.trace)
 
-    def top(self, *args):
+    def top(self, *args: Any) -> int:
         """top most state given to all HSMs; treat it as an outside function"""
         chart, event = args[0], args[1]
         if event.signal == signals.SUBSCRIBE_META_SIGNAL:
@@ -582,7 +586,7 @@ class ActiveObject(HsmWithQueues):
             result = True if self.thread.is_alive() else False
         return result
 
-    def append_subscribe_to_spy(fn):
+    def append_subscribe_to_spy(fn: _F) -> _F:
         """instrument the full spy with our subscription request"""
 
         @wraps(fn)
@@ -597,7 +601,7 @@ class ActiveObject(HsmWithQueues):
                 )
                 return fn(self, e_or_s, queue_type)
 
-        return _append_subscribe_to_spy
+        return cast(_F, _append_subscribe_to_spy)
 
     def subscribe(
         self, event_or_signal: EventOrSignal, queue_type: Optional[QueueType] = None
@@ -637,7 +641,7 @@ class ActiveObject(HsmWithQueues):
     def _subscribe(self, event_or_signal, queue_type):
         self.fabric.subscribe(self.queue, event_or_signal, queue_type)
 
-    def append_publish_to_spy(fn):
+    def append_publish_to_spy(fn: _F) -> _F:
         """instrument the rtc spy with our publish event"""
 
         @wraps(fn)
@@ -648,7 +652,7 @@ class ActiveObject(HsmWithQueues):
                 )
                 return fn(self, e, priority)
 
-        return _append_publish_to_spy
+        return cast(_F, _append_publish_to_spy)
 
     def publish(self, event: HsmEvent, priority: Optional[int] = None) -> None:
         if priority is None:
@@ -1149,14 +1153,18 @@ class ActiveObject(HsmWithQueues):
             else:
                 self.posted_events_queue.rotate(1)
 
-    def register_live_spy_callback(self, live_spy_callback):
+    def register_live_spy_callback(
+        self, live_spy_callback: Callable[[str], None]
+    ) -> None:
         # enclose the live_spy_callback
         def _live_spy_callback(line):
             self.writer._print(fn=live_spy_callback, content=line)
 
         self.live_spy_callback = _live_spy_callback
 
-    def register_live_trace_callback(self, live_trace_callback):
+    def register_live_trace_callback(
+        self, live_trace_callback: Callable[[str], None]
+    ) -> None:
         # enclose the live_trace_callback
         def _live_trace_callback(line):
             self.writer._print(fn=live_trace_callback, content=line)

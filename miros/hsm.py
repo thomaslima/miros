@@ -11,9 +11,13 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import datetime as stdlib_datetime
 from functools import wraps
-from typing import Callable, Generic, Self, TypeVar, cast
+from typing import Any, Callable, Generic, Self, TypeVar, cast
 
 from miros.event import Event, return_status, signals
+
+# A signature-preserving TypeVar for instrumentation/decorator helpers, so that
+# the methods they wrap keep their precise signatures for type checkers.
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 """
 This module provides a hierarchical state machine event class (HsmEventProcessor), and an
@@ -258,7 +262,7 @@ def state_method_template(name):
 
 # This is defined in the module name space so that inherited classes can access
 # it
-def spy_on_start(fn):
+def spy_on_start(fn: _F) -> _F:
     """instrument the on_start method into the spy log"""
 
     @wraps(fn)
@@ -296,22 +300,22 @@ def spy_on_start(fn):
         self.full.spy.extend(self.rtc.spy)
         return status
 
-    return _spy_on_start
+    return cast(_F, _spy_on_start)
 
 
-def append_fifo_to_spy(fn):
+def append_fifo_to_spy(fn: _F) -> _F:
     @wraps(fn)
     def _append_fifo_to_spy(self, e):
         fn(self, e)
         if self.instrumented:
             self.rtc.spy.append("POST_FIFO:{}".format(e.signal_name))
 
-    return _append_fifo_to_spy
+    return cast(_F, _append_fifo_to_spy)
 
 
 # This is defined in the module name space so that inherited classes can access
 # it
-def trace_on_start(fn):
+def trace_on_start(fn: _F) -> _F:
     """instrument the on_start method into the trace log"""
 
     @wraps(fn)
@@ -332,10 +336,10 @@ def trace_on_start(fn):
                 self.full.trace.append(t)
         return status
 
-    return _trace_on_start
+    return cast(_F, _trace_on_start)
 
 
-def append_queue_reflection_after_start(fn):
+def append_queue_reflection_after_start(fn: _F) -> _F:
     @wraps(fn)
     def _append_queue_reflection_after_start(self, initial_state):
         result = fn(self, initial_state)
@@ -344,7 +348,7 @@ def append_queue_reflection_after_start(fn):
             self.full.spy.append(self.queue_reflection())
         return result
 
-    return _append_queue_reflection_after_start
+    return cast(_F, _append_queue_reflection_after_start)
 
 
 # The chart type a state handler is written against. Invariant: it appears in a
@@ -401,7 +405,7 @@ class HsmEventProcessor:
         self.state_name = self.state.fun.__name__
         self.state_fn = self.state.fun
 
-    def top(self, *args):
+    def top(self, *args: Any) -> int:
         """top most state given to all HSM; treat it as an outside function"""
         status = return_status.IGNORED
         return status
@@ -1149,7 +1153,7 @@ class InstrumentedHsmEventProcessor(HsmEventProcessor):
     def start_at(self, initial_state):
         super().start_at(initial_state)
 
-    def append_to_full_spy(fn):
+    def append_to_full_spy(fn: _F) -> _F:
         @wraps(fn)
         def _append_to_full_spy(self, e):
             if not self.instrumented:
@@ -1161,13 +1165,13 @@ class InstrumentedHsmEventProcessor(HsmEventProcessor):
                 fn(self, e)
                 self.full.spy.extend(self.rtc.spy)
 
-        return _append_to_full_spy
+        return cast(_F, _append_to_full_spy)
 
-    def scribble(self, string):
+    def scribble(self, string: str) -> None:
         if self.instrumented:
             self.rtc.spy.append(string)
 
-    def append_to_full_trace(fn):
+    def append_to_full_trace(fn: _F) -> _F:
         @wraps(fn)
         def is_signal_hooked(self):
             signal_name, hooked, dt = "", False, None
@@ -1205,7 +1209,7 @@ class InstrumentedHsmEventProcessor(HsmEventProcessor):
 
                     self.full.trace.append(t)
 
-        return _append_to_full_trace
+        return cast(_F, _append_to_full_trace)
 
     @append_to_full_spy
     @append_to_full_trace
@@ -1249,13 +1253,17 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
     def live_trace_callback_default(trace_line):
         print(trace_line.replace("\n", ""))
 
-    def register_live_spy_callback(self, live_spy_callback):
+    def register_live_spy_callback(
+        self, live_spy_callback: Callable[[str], None]
+    ) -> None:
         self.live_spy_callback = live_spy_callback
 
-    def register_live_trace_callback(self, live_trace_callback):
+    def register_live_trace_callback(
+        self, live_trace_callback: Callable[[str], None]
+    ) -> None:
         self.live_trace_callback = live_trace_callback
 
-    def print_spy_after_at_start_if_live(fn):
+    def print_spy_after_at_start_if_live(fn: _F) -> _F:
         @wraps(fn)
         def _print_spy_if_live(self, initial_state):
             # fn is _print_trace_if_live
@@ -1265,7 +1273,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
                     self.live_spy_callback(line)
             return result
 
-        return _print_spy_if_live
+        return cast(_F, _print_spy_if_live)
 
     def trace_tuple_to_formatted_string(self, tr):
         if self.name is None:
@@ -1286,7 +1294,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
         )
         return strace
 
-    def print_trace_after_at_start_if_live(fn):
+    def print_trace_after_at_start_if_live(fn: _F) -> _F:
         @wraps(fn)
         def _print_trace_if_live(self, initial_state):
             tr = None
@@ -1302,9 +1310,9 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
                 self.last_live_trace_datetime = tr.datetime
             return result
 
-        return _print_trace_if_live
+        return cast(_F, _print_trace_if_live)
 
-    def print_spy_after_rtc_if_live(fn):
+    def print_spy_after_rtc_if_live(fn: _F) -> _F:
         @wraps(fn)
         def _print_spy_if_live(self):
             # fn is _print_trace_if_live
@@ -1314,9 +1322,9 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
                     self.live_spy_callback(line)
             return result
 
-        return _print_spy_if_live
+        return cast(_F, _print_spy_if_live)
 
-    def print_trace_after_rtc_if_live(fn):
+    def print_trace_after_rtc_if_live(fn: _F) -> _F:
         @wraps(fn)
         def _print_trace_if_live(self):
             tr = None
@@ -1334,7 +1342,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
                 self.last_live_trace_datetime = tr.datetime
             return result
 
-        return _print_trace_if_live
+        return cast(_F, _print_trace_if_live)
 
     # print_spy_after_at_start_if_live calls print_trace_after_at_start_if_live
     # which calls append_queue_reflection_after_start which calls start_at.
@@ -1368,25 +1376,25 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
             len(self.queue), len(self.defer_queue)
         )
 
-    def append_lifo_to_spy(fn):
+    def append_lifo_to_spy(fn: _F) -> _F:
         @wraps(fn)
         def _append_lifo_to_spy(self, e):
             fn(self, e)
             if self.instrumented:
                 self.rtc.spy.append("POST_LIFO:{}".format(e.signal_name))
 
-        return _append_lifo_to_spy
+        return cast(_F, _append_lifo_to_spy)
 
-    def append_defer_to_spy(fn):
+    def append_defer_to_spy(fn: _F) -> _F:
         @wraps(fn)
         def _append_defer_to_spy(self, e):
             fn(self, e)
             if self.instrumented:
                 self.rtc.spy.append("POST_DEFERRED:{}".format(e.signal_name))
 
-        return _append_defer_to_spy
+        return cast(_F, _append_defer_to_spy)
 
-    def append_recall_to_spy(fn):
+    def append_recall_to_spy(fn: _F) -> _F:
         @wraps(fn)
         def _append_recall_to_spy(self):
             if self.instrumented:
@@ -1399,9 +1407,9 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
             e = fn(self)
             return e
 
-        return _append_recall_to_spy
+        return cast(_F, _append_recall_to_spy)
 
-    def append_queue_reflection_to_spy(fn):
+    def append_queue_reflection_to_spy(fn: _F) -> _F:
         @wraps(fn)
         def _append_queue_reflection_to_spy(self):
             # fn is _print_spy_if_live
@@ -1411,18 +1419,18 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
                 self.full.spy.append(self.queue_reflection())
             return result
 
-        return _append_queue_reflection_to_spy
+        return cast(_F, _append_queue_reflection_to_spy)
 
     @append_fifo_to_spy
-    def post_fifo(self, e):
+    def post_fifo(self, e: Event) -> str | None:
         self.queue.append(e)
 
     @append_lifo_to_spy
-    def post_lifo(self, e):
+    def post_lifo(self, e: Event) -> str | None:
         self.queue.appendleft(e)
 
     @append_defer_to_spy
-    def defer(self, e):
+    def defer(self, e: Event) -> None:
         self.defer_queue.append(e)
 
     @append_recall_to_spy
@@ -1442,7 +1450,7 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
     @print_spy_after_rtc_if_live
     @print_trace_after_rtc_if_live
     @append_queue_reflection_to_spy
-    def next_rtc(self):
+    def next_rtc(self) -> bool:
         if self.instrumented:
             self.rtc.spy.clear()
         action_taken = True
@@ -1453,17 +1461,17 @@ class HsmWithQueues(InstrumentedHsmEventProcessor):
             action_taken = False
         return action_taken
 
-    def complete_circuit(self):
+    def complete_circuit(self) -> bool:
         action_taken = False
         while len(self.queue) != 0:
             action_taken = self.next_rtc()
         return action_taken
 
-    def clear_spy(self):
+    def clear_spy(self) -> None:
         if self.instrumented:
             self.full.spy.clear()
 
-    def clear_trace(self):
+    def clear_trace(self) -> None:
         if self.instrumented:
             self.full.trace.clear()
             self.last_live_trace_datetime = stdlib_datetime.now()
