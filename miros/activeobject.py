@@ -8,7 +8,7 @@ from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import Optional
+from typing import Callable, Optional
 
 from miros.event import Event as HsmEvent
 from miros.event import Signal, signals
@@ -594,7 +594,9 @@ class ActiveObject(HsmWithQueues):
 
         return _append_subscribe_to_spy
 
-    def subscribe(self, event_or_signal, queue_type=None):
+    def subscribe(
+        self, event_or_signal: "HsmEvent | int | str", queue_type: Optional[str] = None
+    ) -> None:
         if queue_type is None:
             queue_type = "fifo"
 
@@ -615,7 +617,9 @@ class ActiveObject(HsmWithQueues):
         payload = SubscribeEvent(event_or_signal=event_or_signal, queue_type=queue_type)
         self.post_lifo(HsmEvent(signal=signals.SUBSCRIBE_META_SIGNAL, payload=payload))
 
-    def subscribed(self, event_or_signal, queue_type):
+    def subscribed(
+        self, event_or_signal: "HsmEvent | int | str", queue_type: Optional[str]
+    ) -> bool:
         result = (
             False
             if self.__thread_running() is False
@@ -641,7 +645,7 @@ class ActiveObject(HsmWithQueues):
 
         return _append_publish_to_spy
 
-    def publish(self, event, priority=None):
+    def publish(self, event: HsmEvent, priority: Optional[int] = None) -> None:
         if priority is None:
             priority = 1000
 
@@ -666,7 +670,13 @@ class ActiveObject(HsmWithQueues):
             priority = 1000
         self.fabric.publish(event, priority)
 
-    def post_fifo(self, e, period=None, times=None, deferred=None):
+    def post_fifo(
+        self,
+        e: HsmEvent,
+        period: Optional[float] = None,
+        times: Optional[int] = None,
+        deferred: Optional[bool] = None,
+    ) -> Optional[str]:
         """post an event, or events to the fifo queue
 
         Example of posting a single event into the fifo queue:
@@ -701,11 +711,11 @@ class ActiveObject(HsmWithQueues):
 
     def post_lifo(
         self,
-        e,
+        e: HsmEvent,
         period: Optional[float] = None,
         times: Optional[int] = None,
         deferred: Optional[bool] = None,
-    ):
+    ) -> Optional[str]:
         """post an event, or events to the lifo queue
 
         Example of posting a single event into the lifo queue:
@@ -739,7 +749,7 @@ class ActiveObject(HsmWithQueues):
             thread_id = self.__post_event(e, times, period, deferred, queue_type="lifo")
         return thread_id
 
-    def start_at(self, initial_state):
+    def start_at(self, initial_state: Callable[..., int]) -> None:
         """start the active object at a given state and begin its task"""
         if self.name is None:
             function_name = initial_state(
@@ -1037,7 +1047,7 @@ class ActiveObject(HsmWithQueues):
 
         return thread.name
 
-    def cancel_event(self, uuid=None):
+    def cancel_event(self, uuid: Optional[str] = None) -> None:
         """
         This will cancel an event thread that was created using the __post_event api.
         The original call to the __post_event api would have returned the uuid needed
@@ -1070,7 +1080,7 @@ class ActiveObject(HsmWithQueues):
             else:
                 self.posted_events_queue.rotate(1)
 
-    def cancel_events(self, e):
+    def cancel_events(self, e: HsmEvent) -> None:
         """
         This will cancel all events that have the same signal name as e, that were
         posted using the __post_event.
