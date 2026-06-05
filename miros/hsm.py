@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import inspect
 import pprint
 import re
@@ -9,7 +11,7 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import datetime as stdlib_datetime
 from functools import wraps
-from typing import Callable, Generic, TypeVar, cast
+from typing import Callable, Generic, Self, TypeVar, cast
 
 from miros.event import Event, return_status, signals
 
@@ -345,13 +347,17 @@ def append_queue_reflection_after_start(fn):
     return _append_queue_reflection_after_start
 
 
-HSM_T_co = TypeVar("HSM_T", bound="HsmEventProcessor", covariant=True)
+# The chart type a state handler is written against. Invariant: it appears in a
+# parameter (contravariant) position of the State_T callable below, so a covariant
+# TypeVar can't be used here.
+HSM_T = TypeVar("HSM_T", bound="HsmEventProcessor")
 
-State_T = Callable[[HSM_T_co, "Event"], int]
+# A state handler: takes the chart and an event, returns a return_status code.
+State_T = Callable[[HSM_T, "Event"], int]
 
 
-class Attribute(Generic[HSM_T_co]):
-    fun: Callable[[HSM_T_co, "Event"], int]
+class Attribute(Generic[HSM_T]):
+    fun: State_T[HSM_T]
 
     def __init__(self):
         pass
@@ -361,7 +367,7 @@ class HsmTopologyException(Exception):
     pass
 
 
-class HsmEventProcessor(Generic[HSM_T_co]):
+class HsmEventProcessor:
     SPY_RING_BUFFER_SIZE = 500
     TRC_RING_BUFFER_SIZE = 500
     RTC_RING_BUFFER_SIZE = 250
@@ -370,14 +376,14 @@ class HsmEventProcessor(Generic[HSM_T_co]):
         # making the name space common
         """set initial state of the"""
         # used by the event processor
-        self.state: Attribute[HSM_T_co] = Attribute()
-        self.temp: Attribute[HSM_T_co] = Attribute()
+        self.state: Attribute[Self] = Attribute()
+        self.temp: Attribute[Self] = Attribute()
         self.event = Attribute()
 
         # this is useful if you instrument your event processor
         self.event.ignored = False
 
-    def start_at(self, initial_state: State_T[HSM_T_co]):
+    def start_at(self, initial_state: State_T[Self]) -> None:
         """
         hsm = HsmEventProcessor()
         # build it
@@ -710,7 +716,7 @@ class HsmEventProcessor(Generic[HSM_T_co]):
         self.state_name = t.__name__
         self.state_fn = t
 
-    def trans(self, fn: State_T[HSM_T_co]) -> int:
+    def trans(self, fn: State_T[Self]) -> int:
         """sets a new function target and returns that transition required by engine"""
         self.temp.fun = fn
         return return_status.TRAN
