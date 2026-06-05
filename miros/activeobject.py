@@ -2,16 +2,29 @@
 import sys
 import time
 import uuid
-from collections import deque, namedtuple
+from collections import deque
 from functools import wraps
 from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import Any, Callable, Literal, Optional, TypeAlias, TypeVar, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from miros.event import Event as HsmEvent
-from miros.event import Signal, signals
+from miros.event import signals
 
 # A queue discipline for posted/subscribed events.
 QueueType: TypeAlias = Literal["fifo", "lifo"]
@@ -22,8 +35,11 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 # from this package
 from miros.hsm import (
+    EventQueue,
     HsmEventProcessor,
     HsmWithQueues,
+    State_T,
+    reflect_name,
     return_status,
     state_method_template,
 )
@@ -31,14 +47,56 @@ from miros.singleton import SingletonDecorator
 from miros.thread_safe_attributes import MetaThreadSafeAttributes
 
 
-def pp(item):
+def pp(item: object) -> None:
     pprint(item)
+
+
+def _signal_name(event_or_signal: EventOrSignal) -> str:
+    """Resolve an event, signal number, or signal name to its signal name (str)."""
+    if type(event_or_signal) == HsmEvent:
+        return event_or_signal.signal_name
+    elif type(event_or_signal) == int:
+        return signals.name_for_signal(event_or_signal)
+    else:
+        # by EventOrSignal, anything that is not an Event or signal number is the
+        # signal name itself (a str); type() == checks don't narrow the else branch.
+        return cast(str, event_or_signal)
 
 
 # Add to different signals to signal if they aren't there already
 
-PublishEvent = namedtuple("PublishEvent", ["event", "priority"])
-SubscribeEvent = namedtuple("SubscribeEvent", ["event_or_signal", "queue_type"])
+
+class PublishEvent(NamedTuple):
+    event: "HsmEvent"
+    priority: int
+
+
+class SubscribeEvent(NamedTuple):
+    event_or_signal: EventOrSignal
+    queue_type: QueueType
+
+
+class PostedEventThreadSpec(NamedTuple):
+    event: "HsmEvent"
+    queue_type: QueueType
+    total_times: int
+    deferred: bool
+    period: float
+    task_run_event: ThreadEvent
+
+
+class PostedEvent(NamedTuple):
+    signal_name: str
+    task_run_event: ThreadEvent
+    uuid: str
+
+
+class _HasSignalName(Protocol):
+    """Anything exposing a ``signal_name`` — an ``Event`` or a ``PostedEvent``."""
+
+    # read-only so an (immutable) NamedTuple field satisfies it too.
+    @property
+    def signal_name(self) -> str: ...
 
 
 class SourceThreadEvent(ThreadEvent):
@@ -52,39 +110,48 @@ FiberThreadEvent = SingletonDecorator(SourceThreadEvent)
 
 
 class FabricEvent:
-    def __init__(self, event, priority):
+    def __init__(self, event: "HsmEvent", priority: int) -> None:
         self.priority = priority
         self.event = event
 
-    def __lt__(self, other):
+    def __lt__(self, other: "FabricEvent") -> bool:
         return self.priority < other.priority
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FabricEvent):
+            return NotImplemented
         return self.priority == other.priority
 
 
-Instrumention = namedtuple("Instrumention", ["fn", "content"])
+class Instrumention(NamedTuple):
+    fn: Callable[[str], None]
+    content: str
 
 
-def _print(content):
+def _print(content: str) -> None:
     print(content)
     sys.stdout.flush()
 
 
 class InstrumenationWriterClass:
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._event = FiberThreadEvent()
-        self._queue = Queue()
-        self._thread = None
+        self._queue: "Queue[Instrumention | None]" = Queue()
+        self._thread: Optional[Thread] = None
 
-    def start(self):
+    def start(self) -> None:
         self._event.set()
 
-        def thread_runner(self: InstrumenationWriterClass):
+        def thread_runner(self: "InstrumenationWriterClass") -> None:
             while self._event.is_set():
                 # i is an Instrumentation namedtuple
                 i = self._queue.get()
+                if i is None:
+                    # sentinel posted by stop() to unblock a pending get(); the
+                    # surrounding event has already been cleared, so exit the loop.
+                    self._queue.task_done()
+                    break
                 fn = i.fn
                 content = i.content
 
@@ -94,20 +161,21 @@ class InstrumenationWriterClass:
         self._thread = Thread(target=thread_runner, args=(self,), daemon=True)
         self._thread.start()
 
-    def _print(self, fn, content):
+    def write(self, fn: Callable[[str], None], content: str) -> None:
         self._queue.put(Instrumention(fn=fn, content=content))
 
-    def is_alive(self):
+    def is_alive(self) -> bool:
         if self._thread is None:
             result = False
         else:
             result = self._thread.is_alive()
         return result
 
-    def stop(self):
+    def stop(self) -> None:
         self._event.clear()
         self._queue.put(None)
-        self._thread.join()
+        if self._thread is not None:
+            self._thread.join()
 
 
 InstrumentionWriter = SingletonDecorator(InstrumenationWriterClass)
@@ -153,26 +221,26 @@ class ActiveFabricSource:
     which can be killed and restarted.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         # This is used to end the tasks forever loops
         self.fabric_task_event = FiberThreadEvent()
 
         # Set up two priority queues one for the fifo and one for the lifo
-        self.fifo_fabric_queue = PriorityQueue()
-        self.lifo_fabric_queue = PriorityQueue()
+        self.fifo_fabric_queue: "PriorityQueue[FabricEvent]" = PriorityQueue()
+        self.lifo_fabric_queue: "PriorityQueue[FabricEvent]" = PriorityQueue()
 
         # There are two different subscription registries
-        self.fifo_subscriptions = {}
-        self.lifo_subscriptions = {}
+        self.fifo_subscriptions: Dict[str, List[EventQueue]] = {}
+        self.lifo_subscriptions: Dict[str, List[EventQueue]] = {}
 
         # Two different threads which will pend on items in their respective
         # priority queues
-        self.fifo_thread = None
-        self.lifo_thread = None
+        self.fifo_thread: Optional[Thread] = None
+        self.lifo_thread: Optional[Thread] = None
 
-    def start(self):
+    def start(self) -> None:
         """start up the threads which manage the queues and subscription registry."""
 
         # Get the ThreadEvent (singleton), set it so that the threads will try and
@@ -181,7 +249,13 @@ class ActiveFabricSource:
         self.fabric_task_event.set()
 
         # Initiate a thread and return it so that this object can reference it later
-        def initiate_thread(thread_obj, name, thread_runner, queue, subscriptions):
+        def initiate_thread(
+            thread_obj: Optional[Thread],
+            name: str,
+            thread_runner: Callable[..., None],
+            queue: "PriorityQueue[FabricEvent]",
+            subscriptions: Dict[str, List[EventQueue]],
+        ) -> Optional[Thread]:
             if thread_obj is None or thread_obj.is_alive() is not True:
                 thread_obj = Thread(
                     target=thread_runner,
@@ -193,6 +267,7 @@ class ActiveFabricSource:
                 # if we haven't done what we promised, crash the program
                 assert thread_obj.is_alive() is True
                 return thread_obj
+            return None
 
         # Create a thread to wake up on fifo priority queue events
         self.fifo_thread = initiate_thread(
@@ -212,7 +287,7 @@ class ActiveFabricSource:
             subscriptions=self.lifo_subscriptions,
         )
 
-    def is_alive(self):
+    def is_alive(self) -> bool:
         result = True
         if self.fifo_thread is not None and self.lifo_thread is not None:
             result &= self.fifo_thread.is_alive()
@@ -221,7 +296,7 @@ class ActiveFabricSource:
             result &= False
         return result
 
-    def stop(self):
+    def stop(self) -> None:
         """stop the the threads in such a way that it can be restarted again"""
 
         # Get the ThreadEvent (singleton), clear it so that the threads will try to
@@ -231,7 +306,9 @@ class ActiveFabricSource:
 
         # Post an item to the queue to wake up the thread then join on it until it
         # completes its last run and exits
-        def stop_thread(thread_obj, queue):
+        def stop_thread(
+            thread_obj: Optional[Thread], queue: "PriorityQueue[FabricEvent]"
+        ) -> None:
             if thread_obj is not None:
                 if thread_obj.is_alive() is True:
                     stop_fe = FabricEvent(
@@ -251,51 +328,60 @@ class ActiveFabricSource:
         if self.lifo_thread is not None:
             assert self.lifo_thread.is_alive() is False
 
-    def thread_runner_fifo(self, fabric_task_event, fifo_queue, fifo_subscriptions):
+    def thread_runner_fifo(
+        self,
+        fabric_task_event: "SourceThreadEvent",
+        fifo_queue: "PriorityQueue[FabricEvent]",
+        fifo_subscriptions: Dict[str, List[EventQueue]],
+    ) -> None:
         """If this was a Thread class this function would be called "run"
 
         This is the main execution code of the thread.  It watches to see if the
         HsmEvent() singleton has been cleared, if it has it exits its forever loop.
 
         """
-        fifo_item = None
         while fabric_task_event.is_set():
             # this locks the task, it will only run if something is in the queue
             fifo_item = fifo_queue.get()
 
-            if fifo_item is not None:
-                event = fifo_item.event
-                if event.signal_name in fifo_subscriptions.keys():
-                    for q in fifo_subscriptions[event.signal_name]:
-                        # Post the inner event from your FabricEvent object.
-                        q.append(fifo_item.event)
+            event = fifo_item.event
+            if event.signal_name in fifo_subscriptions.keys():
+                for q in fifo_subscriptions[event.signal_name]:
+                    # Post the inner event from your FabricEvent object.
+                    q.append(fifo_item.event)
 
-            fifo_item = None
             fifo_queue.task_done()  # so that join can work
 
-    def thread_runner_lifo(self, fabric_task_event, lifo_queue, lifo_subscriptions):
+    def thread_runner_lifo(
+        self,
+        fabric_task_event: "SourceThreadEvent",
+        lifo_queue: "PriorityQueue[FabricEvent]",
+        lifo_subscriptions: Dict[str, List[EventQueue]],
+    ) -> None:
         """If this was a Thread class this function would be called "run"
 
         This is the main execution code of the thread.  It watches to see if the
         HsmEvent() singleton has been cleared, if it has it exits its forever loop.
 
         """
-        lifo_item = None
         while fabric_task_event.is_set():
             # this locks the task, it will only run if something is in the queue
             lifo_item = lifo_queue.get()
 
-            if lifo_item is not None:
-                event = lifo_item.event
-                if event.signal_name in lifo_subscriptions.keys():
-                    for q in lifo_subscriptions[event.signal_name]:
-                        # Post the inner event from your FabricEvent object.
-                        q.append(lifo_item.event)
+            event = lifo_item.event
+            if event.signal_name in lifo_subscriptions.keys():
+                for q in lifo_subscriptions[event.signal_name]:
+                    # Post the inner event from your FabricEvent object.
+                    q.append(lifo_item.event)
 
-            lifo_item = None
             lifo_queue.task_done()  # so that join can work
 
-    def subscribe(self, queue, event_or_signal, queue_type=None):
+    def subscribe(
+        self,
+        queue: EventQueue,
+        event_or_signal: EventOrSignal,
+        queue_type: Optional[QueueType] = None,
+    ) -> Optional[str]:
         """subscribe a queue to an event in a 'fifo' or 'lifo' way
 
         There are two different ways to subscribe to an event:
@@ -353,11 +439,10 @@ class ActiveFabricSource:
         """
 
         # this in an internal function to subscribe
-        def _subscribe(internal_queue, signal):
-            if type(signal) == HsmEvent:
-                signal_name = signal.signal_name
-            elif type(signal) == int:
-                signal_name = signals.name_for_signal(signal)
+        def _subscribe(
+            internal_queue: Dict[str, List[EventQueue]], signal: EventOrSignal
+        ) -> Optional[str]:
+            signal_name = _signal_name(signal)
 
             if signal_name in internal_queue:
                 registry = internal_queue[signal_name]
@@ -371,6 +456,7 @@ class ActiveFabricSource:
             else:
                 internal_queue[signal_name] = [queue]
                 return signal_name
+            return None
 
         if queue_type is None:
             queue_type = "fifo"
@@ -381,11 +467,10 @@ class ActiveFabricSource:
             signal_name = _subscribe(self.fifo_subscriptions, event_or_signal)
         return signal_name
 
-    def subscribed(self, event_or_signal, queue_type):
-        if type(event_or_signal) == HsmEvent:
-            signal_name = event_or_signal.signal_name
-        elif type(event_or_signal) == int:
-            signal_name = signals.name_for_signal(event_or_signal)
+    def subscribed(
+        self, event_or_signal: EventOrSignal, queue_type: QueueType
+    ) -> bool:
+        signal_name = _signal_name(event_or_signal)
 
         if queue_type == "fifo":
             internal_queue = self.fifo_subscriptions
@@ -397,7 +482,7 @@ class ActiveFabricSource:
         result = True if signal_name in internal_queue else False
         return result
 
-    def publish(self, event, priority=None):
+    def publish(self, event: "HsmEvent", priority: Optional[int] = None) -> None:
         """publish an event with a given priority to all subscribed queues
 
         Priority of 1 is the highest priority
@@ -410,7 +495,7 @@ class ActiveFabricSource:
         felifo = FabricEvent(event, priority)
         self.fifo_fabric_queue.put(felifo)
 
-    def clear(self):
+    def clear(self) -> None:
         """clear out all subscriptions and queues"""
         self.fifo_fabric_queue = PriorityQueue()
         self.lifo_fabric_queue = PriorityQueue()
@@ -446,25 +531,25 @@ class LockingDeque:
 
     """
 
-    def __init__(self, *args, **kwargs):
-        self.deque = deque(maxlen=HsmWithQueues.QUEUE_SIZE)
-        self.locking_queue = Queue(maxsize=HsmWithQueues.QUEUE_SIZE)
+    def __init__(self) -> None:
+        self.deque: "deque[HsmEvent]" = deque(maxlen=HsmWithQueues.QUEUE_SIZE)
+        self.locking_queue: "Queue[str]" = Queue(maxsize=HsmWithQueues.QUEUE_SIZE)
 
-    def get(self, block=True, timeout=None):
+    def get(self, block: bool = True, timeout: Optional[float] = None) -> str:
         """block on the locking queue, popleft from deque"""
         return self.locking_queue.get(block, timeout)
 
-    def wait(self, block=True, timeout=None):
+    def wait(self, block: bool = True, timeout: Optional[float] = None) -> str:
         """wait for an append/appendleft event"""
         return self.get(block, timeout)
 
-    def popleft(self):
+    def popleft(self) -> "HsmEvent":
         return self.deque.popleft()
 
-    def pop(self):
+    def pop(self) -> "HsmEvent":
         return self.deque.pop()
 
-    def append(self, item):
+    def append(self, item: "HsmEvent") -> None:
         if self.locking_queue.full() is False:
             # we don't care about storing items in the locking_queue, our information
             # is in the deque, the locking_queue provides the 'get' unlocking feature
@@ -478,7 +563,7 @@ class LockingDeque:
             while self.locking_queue.qsize() != len(self.deque):
                 self.locking_queue.put("ready")
 
-    def appendleft(self, item):
+    def appendleft(self, item: "HsmEvent") -> None:
         if self.locking_queue.full() is False:
             # we don't care about storing items in the locking_queue, our information
             # is in the deque, the locking_queue provides the 'get' locking feature
@@ -489,24 +574,24 @@ class LockingDeque:
             while self.locking_queue.qsize() != len(self.deque):
                 self.locking_queue.put("ready")
 
-    def clear(self):
+    def clear(self) -> None:
         self.deque.clear()
         try:
             while True:
                 self.locking_queue.get_nowait()
-        except:
+        except:  # noqa: E722  (queue.Empty once drained; safe to stop)
             self.locking_queue.task_done()
 
-    def task_done(self):
+    def task_done(self) -> None:
         self.locking_queue.task_done()  # so that join can work
 
-    def qsize(self):
+    def qsize(self) -> int:
         return self.locking_queue.qsize()
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.deque)
 
-    def len(self):
+    def len(self) -> int:
         return len(self.deque)
 
 
@@ -515,6 +600,9 @@ class ActiveObjectOutOfPostedEventResources(Exception):
 
 
 class ActiveObject(HsmWithQueues):
+    # set up lazily in __start(); declared here so the type is known everywhere.
+    fabric_task_event: "SourceThreadEvent"
+
     def __init__(
         self, name: Optional[str] = None, instrumented: Optional[bool] = None
     ) -> None:
@@ -523,7 +611,7 @@ class ActiveObject(HsmWithQueues):
 
         super().__init__(instrumented)
         self.locking_deque = LockingDeque()
-        self.activeobject_task_event = ThreadEvent()
+        self.activeobject_task_event: ThreadEvent = ThreadEvent()
         # Over-write the deque in the Hsm with Queues with the one managed by the
         # LockingDeque object. This is the 'magic' in this object.  Any time a
         # post_fifo or post_lifo method within the Hsm is touched, it unknowingly uses
@@ -540,36 +628,26 @@ class ActiveObject(HsmWithQueues):
         # for writing live instrumentation
         self.writer = InstrumentionWriter()
 
-        self.thread = None
+        self.thread: Optional[Thread] = None
         self.name = name
 
         # the QUEUE_SIZE is defined in HsmWithQueues
-        self.posted_events_queue = deque(maxlen=self.__class__.QUEUE_SIZE)
-        self.PostedEventThreadSpec = namedtuple(
-            "PostedEventThreadSpec",
-            [
-                "event",
-                "queue_type",
-                "total_times",
-                "deferred",
-                "period",
-                "task_run_event",
-            ],
+        self.posted_events_queue: "deque[PostedEvent]" = deque(
+            maxlen=self.__class__.QUEUE_SIZE
         )
-        self.PostedEvent = namedtuple(
-            "PostedEvents",
-            [
-                "signal_name",
-                "task_run_event",
-                "uuid",
-            ],
-        )
+        self.PostedEventThreadSpec = PostedEventThreadSpec
+        self.PostedEvent = PostedEvent
 
         self.register_live_spy_callback(self.__class__.live_spy_callback_default)
 
         self.register_live_trace_callback(self.__class__.live_trace_callback_default)
 
-        self.last_live_trace_datetime = len(self.full.trace)
+        # The base initialises this to a real datetime; here we reset it so the
+        # first live trace always prints. len(self.full.trace) is 0 at this point,
+        # but the slot is typed datetime | None and is only ever compared with !=
+        # to a TraceTuple datetime (always unequal for None), so None preserves
+        # behaviour while keeping the type honest.
+        self.last_live_trace_datetime = None
 
     def top(self, chart: HsmEventProcessor, event: HsmEvent) -> int:
         """top most state given to all HSMs; treat it as an outside function"""
@@ -583,22 +661,24 @@ class ActiveObject(HsmWithQueues):
             status = super().top(chart, event)
         return status
 
-    def __thread_running(self):
+    def __thread_running(self) -> bool:
         if self.thread is None:
             result = False
         else:
             result = True if self.thread.is_alive() else False
         return result
 
+    @staticmethod
     def append_subscribe_to_spy(fn: _F) -> _F:
         """instrument the full spy with our subscription request"""
 
         @wraps(fn)
-        def _append_subscribe_to_spy(self, e_or_s, queue_type="fifo"):
-            if type(e_or_s) == HsmEvent:
-                signal_name = e_or_s.signal_name
-            elif type(e_or_s) == int:
-                signal_name = signals.name_for_signal(e_or_s)
+        def _append_subscribe_to_spy(
+            self: "ActiveObject",
+            e_or_s: EventOrSignal,
+            queue_type: QueueType = "fifo",
+        ) -> None:
+            signal_name = _signal_name(e_or_s)
             if self.instrumented:
                 self.scribble(
                     "SUBSCRIBING TO:({}, TYPE:{})".format(signal_name, queue_type)
@@ -639,14 +719,19 @@ class ActiveObject(HsmWithQueues):
 
     # @start_thread_if_not_running
     @append_subscribe_to_spy
-    def _subscribe(self, event_or_signal, queue_type):
+    def _subscribe(
+        self, event_or_signal: EventOrSignal, queue_type: QueueType
+    ) -> None:
         self.fabric.subscribe(self.queue, event_or_signal, queue_type)
 
+    @staticmethod
     def append_publish_to_spy(fn: _F) -> _F:
         """instrument the rtc spy with our publish event"""
 
         @wraps(fn)
-        def _append_publish_to_spy(self, e, priority):
+        def _append_publish_to_spy(
+            self: "ActiveObject", e: "HsmEvent", priority: int
+        ) -> None:
             if self.instrumented:
                 self.rtc.spy.append(
                     "PUBLISH:({}, PRIORITY:{})".format(e.signal_name, priority)
@@ -671,7 +756,7 @@ class ActiveObject(HsmWithQueues):
 
     @append_publish_to_spy
     # @start_thread_if_not_running
-    def _publish(self, event, priority=None):
+    def _publish(self, event: "HsmEvent", priority: Optional[int] = None) -> None:
         """publish an event at a given priority to the active fabric"""
         if priority is None:
             priority = 1000
@@ -782,17 +867,15 @@ class ActiveObject(HsmWithQueues):
             thread_id = self.__post_event(e, times, period, deferred, queue_type="lifo")
         return thread_id
 
-    def start_at(self, initial_state: Callable[..., int]) -> None:
+    def start_at(self, initial_state: "State_T[ActiveObject]") -> None:
         """start the active object at a given state and begin its task"""
         if self.name is None:
-            function_name = initial_state(
-                self, HsmEvent(signal=signals.REFLECTION_SIGNAL)
-            )
+            function_name = reflect_name(initial_state, self)
             self.name = str(uuid.uuid5(uuid.NAMESPACE_DNS, function_name))[0:5]
         super().start_at(initial_state)
         self.__start()
 
-    def __start(self):
+    def __start(self) -> None:
         """Starts an active object thread, and the active fabric if it is not running"""
         # if the self.post_event_queue variable is not defined, create it
         try:
@@ -806,7 +889,7 @@ class ActiveObject(HsmWithQueues):
         except:
             self.locking_deque = LockingDeque()
 
-        def start_thread(self: ActiveObject):
+        def start_thread(self: "ActiveObject") -> Thread:
             """Starts an active object -- called within __start
 
             This will start an active object and the task fabric
@@ -826,7 +909,9 @@ class ActiveObject(HsmWithQueues):
                 target=self.run_event,
                 args=(self.activeobject_task_event, self.fabric_task_event, self.queue),
             )
-            thread.name = self.name
+            # Thread.name is a str; the setter coerces with str() anyway, so this
+            # matches the prior behaviour when self.name is None.
+            thread.name = str(self.name)
             thread.daemon = True
             thread.start()
             return thread
@@ -834,7 +919,7 @@ class ActiveObject(HsmWithQueues):
         if self.__thread_running() is False:
             self.thread = start_thread(self)
 
-    def stop(self):
+    def stop(self) -> None:
         """Stops the active object, can cancels all of its pending events"""
         self.activeobject_task_event.clear()
 
@@ -844,7 +929,8 @@ class ActiveObject(HsmWithQueues):
         try:
             # If stop is being called outside of this active object, wait for this
             # thread to stop
-            self.thread.join()
+            if self.thread is not None:
+                self.thread.join()
         except RuntimeError:
             # If stop is being called from within the active object thread, we can not
             # join our own thread, so proceed with the next steps
@@ -859,9 +945,9 @@ class ActiveObject(HsmWithQueues):
     def run_event(
         self,
         task_event: ThreadEvent,
-        fabric_task_event: FiberThreadEvent,
+        fabric_task_event: "SourceThreadEvent",
         queue: LockingDeque,
-    ):
+    ) -> None:
         """The active object threading function.
 
         If this statechart has not been stopped and the active fabric hasn't been
@@ -878,7 +964,10 @@ class ActiveObject(HsmWithQueues):
             queue.wait()  # wait for an event
             if fabric_task_event.is_set():
                 if len(self.queue) >= 1:
-                    if self.queue.deque[0].signal != signals.STOP_ACTIVE_OBJECT_SIGNAL:
+                    # queue is this object's LockingDeque (typed), which exposes
+                    # the underlying .deque; self.queue is the EventQueue Protocol
+                    # and doesn't.
+                    if queue.deque[0].signal != signals.STOP_ACTIVE_OBJECT_SIGNAL:
                         self.next_rtc()
                     else:
                         task_event.clear()
@@ -886,7 +975,7 @@ class ActiveObject(HsmWithQueues):
                 task_event.clear()
             queue.task_done()  # write this so that 'join' will work
 
-    def trace(self):
+    def trace(self) -> Optional[str]:
         """Output state transition information only:
 
         Example:
@@ -904,7 +993,14 @@ class ActiveObject(HsmWithQueues):
             strace += self.trace_tuple_to_formatted_string(tr)
         return strace
 
-    def __post_event(self, e, times=None, period=None, deferred=None, queue_type=None):
+    def __post_event(
+        self,
+        e: "HsmEvent",
+        times: Optional[int] = None,
+        period: Optional[float] = None,
+        deferred: Optional[bool] = None,
+        queue_type: Optional[QueueType] = None,
+    ) -> str:
         """
         The post_event method is used to post one-shots or periodic events to the
         active object.
@@ -999,7 +1095,15 @@ class ActiveObject(HsmWithQueues):
                 self.post_fifo(e, period=None)
             else:
                 self.post_lifo(e, period=None)
+            # This branch posts a single event with no managing thread; __post_event
+            # is only ever reached with a period set, so this is a dead path that
+            # previously fell through to the (then-unbound) thread.name return.
+            return ""
         else:
+            # __post_event is only reached with a real period (the public
+            # post_fifo/post_lifo only delegate here when period is not None), so
+            # the periodic task always has a float to sleep on.
+            assert period is not None
             # create an exit event for the task, it will be shared with the
             # cancel_event/cancel_events methods, so that the task can be stopped by
             # someone using the ActiveObject api
@@ -1016,7 +1120,9 @@ class ActiveObject(HsmWithQueues):
                 task_run_event=task_run_event,
             )
 
-            def post_event_thread_runner(spec, deferred, times_activated):
+            def post_event_thread_runner(
+                spec: PostedEventThreadSpec, deferred: bool, times_activated: int
+            ) -> None:
                 # We have a Event object here that can be controlled by something
                 # outside of our task.  If it is cleared, then this thread will just
                 # exit and disappear from the system.
@@ -1048,7 +1154,9 @@ class ActiveObject(HsmWithQueues):
                 args=(posted_event_thread_spec, posted_event_thread_spec.deferred, 0),
                 daemon=True,
             )
-            thread.name = uuid.uuid4()
+            # Thread.name is a str; uuid is stringified (the setter would coerce it
+            # anyway) and the same string is stored/returned as the cancel id.
+            thread.name = str(uuid.uuid4())
             thread.start()
 
             # If we have run out of spots in our queue we should issue an
@@ -1102,7 +1210,7 @@ class ActiveObject(HsmWithQueues):
 
         """
         # print("cancel uuid: {}".format(uuid))
-        for i in reversed(range(len(self.posted_events_queue))):
+        for _ in reversed(range(len(self.posted_events_queue))):
             posted_event_task_meta_data = self.posted_events_queue[-1]
             if posted_event_task_meta_data.uuid is uuid:
                 # If this thread hasn't already finished, ask it to stop
@@ -1113,7 +1221,7 @@ class ActiveObject(HsmWithQueues):
             else:
                 self.posted_events_queue.rotate(1)
 
-    def cancel_events(self, e: HsmEvent) -> None:
+    def cancel_events(self, e: _HasSignalName) -> None:
         """
         This will cancel all events that have the same signal name as e, that were
         posted using the __post_event.
@@ -1141,7 +1249,7 @@ class ActiveObject(HsmWithQueues):
           ao.cancel_events(Event(signal=signals.A))
         """
         # cancel all threads which could cause this event to take place
-        for i in reversed(range(len(self.posted_events_queue))):
+        for _ in reversed(range(len(self.posted_events_queue))):
             posted_event_task_meta_data = self.posted_events_queue[-1]
             if posted_event_task_meta_data.signal_name is e.signal_name:
                 # If this thread hasn't already finished, ask it to stop
@@ -1155,8 +1263,8 @@ class ActiveObject(HsmWithQueues):
         self, live_spy_callback: Callable[[str], None]
     ) -> None:
         # enclose the live_spy_callback
-        def _live_spy_callback(line):
-            self.writer._print(fn=live_spy_callback, content=line)
+        def _live_spy_callback(line: str) -> None:
+            self.writer.write(fn=live_spy_callback, content=line)
 
         self.live_spy_callback = _live_spy_callback
 
@@ -1164,80 +1272,97 @@ class ActiveObject(HsmWithQueues):
         self, live_trace_callback: Callable[[str], None]
     ) -> None:
         # enclose the live_trace_callback
-        def _live_trace_callback(line):
-            self.writer._print(fn=live_trace_callback, content=line)
+        def _live_trace_callback(line: str) -> None:
+            self.writer.write(fn=live_trace_callback, content=line)
 
         self.live_trace_callback = _live_trace_callback
 
     @staticmethod
-    def live_spy_callback_default(spy_line):
+    def live_spy_callback_default(spy_line: str) -> None:
         print(spy_line)
 
     @staticmethod
-    def live_trace_callback_default(trace_line):
+    def live_trace_callback_default(trace_line: str) -> None:
         print(trace_line.replace("\n", ""))
 
-    def print(self, content):
-        self.writer._print(fn=_print, content=content)
+    def print(self, content: str) -> None:
+        self.writer.write(fn=_print, content=content)
 
 
 class Factory(ActiveObject):
     class StateMethodBlueprint:
-        def __init__(self, name: str, ao: ActiveObject):
+        def __init__(self, name: str, ao: ActiveObject) -> None:
             self.name = name
-            self.state_method = state_method_template(name)
+            # the template sets __name__ on the returned function, so it is a
+            # State_T (a named state handler) even though it is typed as a plain
+            # Callable[..., int].
+            self.state_method: "State_T[ActiveObject]" = cast(
+                "State_T[ActiveObject]", state_method_template(name)
+            )
             self.ao = ao
 
-        def catch(self, signal, handler):
+        def catch(
+            self, signal: int, handler: Callable[..., int]
+        ) -> "Factory.StateMethodBlueprint":
             self.ao.register_signal_callback(self.state_method, signal, handler)
             return self
 
-        def to_method(self):
+        def to_method(self) -> "State_T[ActiveObject]":
             return self.state_method
 
-    def __init__(self, name):
+    def __init__(self, name: str) -> None:
         super().__init__()
         self.name = name
-        self.states = {}
+        self.states: Dict[str, "Factory.StateMethodBlueprint"] = {}
 
-    def create(self, state=None) -> StateMethodBlueprint:
+    def create(self, state: Optional[str] = None) -> "Factory.StateMethodBlueprint":
         """
         This will allow the Factory to create different things and attach them to
         itself, for now it can only create states.
 
         """
+        # a state name is required to build the template; the None default is
+        # never used in practice (it would fail downstream) — assert for clarity.
+        assert state is not None
         self.states[state] = self.__class__.StateMethodBlueprint(name=state, ao=self)
         return self.states[state]
 
-    def nest(self, state, parent):
-        if type(state) == str:
-            state_method = self.state[state].state_method
+    def nest(
+        self,
+        state: "str | State_T[ActiveObject]",
+        parent: "Optional[str | State_T[ActiveObject]]",
+    ) -> "Factory":
+        if isinstance(state, str):
+            state_method = self.states[state].state_method
         else:
             state_method = state
 
-        if type(parent) == str:
-            parent_state_method = self.state[parent].state_method
+        if isinstance(parent, str):
+            parent_state_method: "State_T[ActiveObject]" = self.states[
+                parent
+            ].state_method
         else:
-            parent_state_method = parent
-            if parent_state_method is None:
+            if parent is None:
                 parent_state_method = self.top
+            else:
+                parent_state_method = parent
 
         self.register_parent(state_method, parent_state_method)
         return self
 
-    def start_at(self, state):
-        if type(state) == str:
-            state_method = self.state[state].state_method
+    def start_at(self, initial_state: "str | State_T[ActiveObject]") -> None:
+        if isinstance(initial_state, str):
+            state_method = self.states[initial_state].state_method
         else:
-            state_method = state
+            state_method = initial_state
 
         super().start_at(state_method)
 
-    def to_code(self, state):
-        if type(state) == str:
-            state_method = self.states[state].state_method
+    def to_code(self, state_method_name: "str | State_T[ActiveObject]") -> str:
+        if isinstance(state_method_name, str):
+            state_method = self.states[state_method_name].state_method
         else:
-            state_method = state
+            state_method = state_method_name
         return super().to_code(state_method)
 
 

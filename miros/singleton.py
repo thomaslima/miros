@@ -10,6 +10,8 @@ class SingletonDecorator(Generic[T]):
         self.instance: T | None = None
 
     def __call__(self, *args: Any, **kwargs: Any) -> T:
+        # variadic: the first call forwards whatever args the wrapped class'
+        # constructor takes; later calls return the cached instance unchanged.
         if self.instance is None:
             self.instance = self.klass(*args, **kwargs)
         return self.instance
