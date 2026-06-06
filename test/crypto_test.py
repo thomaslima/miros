@@ -2,8 +2,8 @@ import pytest
 cryptography_installed = True
 try:
   from cryptography.fernet import Fernet
-except:
-  cryptography_installed = True
+except ImportError:
+  cryptography_installed = False
 
 @pytest.mark.skipif(cryptography_installed is False, reason="cryptography package needed for this test")
 @pytest.mark.pad

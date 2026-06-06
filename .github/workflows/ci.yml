@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  type-check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches [tool.pyright] pythonVersion in pyproject.toml.
+          python-version: "3.11"
+
+      - name: Install package and tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyright pytest
+
+      - name: Pyright (strict)
+        # Reads [tool.pyright] from pyproject.toml (strict mode, scoped to miros/).
+        run: pyright
+
+      - name: Tests
+        run: pytest
