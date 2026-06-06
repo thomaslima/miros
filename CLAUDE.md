@@ -23,6 +23,19 @@ pytest                      # run the suite from the repo root
 - Test config lives in `pytest.ini`; it sets `-p no:logging` and `--ignore=examples` (the examples dir contains runnable demos, not tests, and pytest would otherwise recurse into it).
 - Tests are in `test/` as `*_test.py`. `examples/` holds standalone, runnable demonstrations — keep them working when you touch public behavior; they double as documentation.
 
+## Type checking (keep it clean)
+
+The `miros/` package is fully annotated and passes **`pyright` in strict mode with 0
+errors** (config under `[tool.pyright]` in `pyproject.toml`, scoped to the package;
+`examples/` and `test/` are intentionally untyped). Run it with `pyright` from the repo
+root. When changing code, keep strict passing **honestly** — do not reach for
+`# type: ignore`, `# pyright: ignore`, rule downgrades, or `cast()`/`: Any` used merely
+to silence a checker. Prefer specific types, `Protocol`s, `NamedTuple`s, and narrowing
+(`assert`, `isinstance`). `cast`/`Any` are acceptable only where the runtime is genuinely
+dynamic or an invariant is true but unprovable to the checker — and then leave a one-line
+comment saying why (see the existing reflection casts, the `__get__` descriptor, and the
+`State_T`/`EventQueue` protocols in `hsm.py` for the established patterns).
+
 ## Branch workflow
 
 - AI-agent changes happen on dedicated `claude/*` branches, never directly on `master`.
