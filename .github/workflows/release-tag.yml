@@ -1,0 +1,37 @@
+name: Release tag
+
+# When a version bump lands on main (e.g. a release PR is merged), create the
+# matching git tag automatically, so releases don't have to be tagged by hand.
+# Idempotent: does nothing if the tag for the current version already exists.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create tag from pyproject version if missing
+        run: |
+          version="$(grep -m1 -E '^version *= *"' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ -z "$version" ]; then
+            echo "Could not read version from pyproject.toml" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "${tag}"
+          git push origin "${tag}"
+          echo "Created and pushed ${tag}."
