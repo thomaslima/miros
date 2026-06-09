@@ -17,6 +17,7 @@ from typing import (
     NamedTuple,
     Optional,
     Protocol,
+    Self,
     TypeAlias,
     TypeVar,
     cast,
@@ -867,7 +868,7 @@ class ActiveObject(HsmWithQueues):
             thread_id = self.__post_event(e, times, period, deferred, queue_type="lifo")
         return thread_id
 
-    def start_at(self, initial_state: "State_T[ActiveObject]") -> None:
+    def start_at(self, initial_state: "State_T[Self]") -> None:
         """start the active object at a given state and begin its task"""
         if self.name is None:
             function_name = reflect_name(initial_state, self)
