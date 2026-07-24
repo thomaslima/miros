@@ -7,7 +7,7 @@ from functools import wraps
 from pprint import pprint
 from queue import PriorityQueue, Queue
 from threading import Event as ThreadEvent
-from threading import Thread
+from threading import Lock, Thread
 from typing import (
     Any,
     Callable,
@@ -636,6 +636,12 @@ class ActiveObject(HsmWithQueues):
         self.posted_events_queue: "deque[PostedEvent]" = deque(
             maxlen=self.__class__.QUEUE_SIZE
         )
+        # Guards every read-modify-write of posted_events_queue.  Individual
+        # deque operations are atomic, but cancel_event/cancel_events walk the
+        # deque with a multi-step inspect-pop-rotate sequence, and a finite
+        # posting's own thread removes its entry when it expires — without a
+        # lock those walks could interleave and pop the wrong entry.
+        self.posted_events_lock = Lock()
         self.PostedEventThreadSpec = PostedEventThreadSpec
         self.PostedEvent = PostedEvent
 
@@ -884,6 +890,12 @@ class ActiveObject(HsmWithQueues):
         except:
             self.posted_events_queue = deque(maxlen=self.__class__.QUEUE_SIZE)
 
+        # if the self.posted_events_lock variable is not defined, create it
+        try:
+            self.posted_events_lock
+        except:
+            self.posted_events_lock = Lock()
+
         # if the self.locking_deque variable is not defined, create it
         try:
             self.locking_deque
@@ -939,7 +951,10 @@ class ActiveObject(HsmWithQueues):
 
         # kill threads which were started by post_fifo or post_lifo single-shots or
         # multi-shots
-        events_with_their_own_threads = [event for event in self.posted_events_queue]
+        with self.posted_events_lock:
+            events_with_their_own_threads = [
+                event for event in self.posted_events_queue
+            ]
         for event in events_with_their_own_threads:
             self.cancel_events(event)
 
@@ -1009,6 +1024,11 @@ class ActiveObject(HsmWithQueues):
         It constructs a fabric_task_event and a task, then starts the task.  The task will
         run periodically posting events into either the fifo or the lifo of the
         active object.
+
+        A finite posting (times != 0) frees its own tracking entry when it
+        expires, so expired one-shots and multi-shots do not count against the
+        QUEUE_SIZE posted-event slots; cancel_event/cancel_events are only
+        needed to stop a posting early (or to stop a forever posting).
 
         Examples:
           # Post an 'A' signal event into the lifo every 1.0 seconds, 5 times.
@@ -1122,7 +1142,10 @@ class ActiveObject(HsmWithQueues):
             )
 
             def post_event_thread_runner(
-                spec: PostedEventThreadSpec, deferred: bool, times_activated: int
+                spec: PostedEventThreadSpec,
+                posted_event: PostedEvent,
+                deferred: bool,
+                times_activated: int,
             ) -> None:
                 # We have a Event object here that can be controlled by something
                 # outside of our task.  If it is cleared, then this thread will just
@@ -1149,43 +1172,67 @@ class ActiveObject(HsmWithQueues):
                     if spec.total_times != 0:
                         if times_activated >= spec.total_times:
                             spec.task_run_event.clear()
+                            # This finite posting has expired on its own; free
+                            # its bookkeeping entry.  Entries used to be removed
+                            # only by cancel_event/cancel_events/stop, so every
+                            # expired one-shot or multi-shot permanently
+                            # consumed one of the QUEUE_SIZE posted-event slots,
+                            # until a later __post_event call raised
+                            # ActiveObjectOutOfPostedEventResources.
+                            with self.posted_events_lock:
+                                try:
+                                    self.posted_events_queue.remove(posted_event)
+                                except ValueError:
+                                    # a cancel_event/cancel_events/stop racing
+                                    # with this expiry already removed the
+                                    # entry — nothing left to free
+                                    pass
+
+            # The cancel id: stored on the PostedEvent, set as the thread name
+            # (whose setter hands back the identical str object), and returned
+            # to the caller — cancel_event matches it by identity ('is').
+            posted_event = self.PostedEvent(
+                e.signal_name,
+                task_run_event,
+                str(uuid.uuid4()),
+            )
 
             thread = Thread(
                 target=post_event_thread_runner,
-                args=(posted_event_thread_spec, posted_event_thread_spec.deferred, 0),
+                args=(
+                    posted_event_thread_spec,
+                    posted_event,
+                    posted_event_thread_spec.deferred,
+                    0,
+                ),
                 daemon=True,
             )
-            # Thread.name is a str; uuid is stringified (the setter would coerce it
-            # anyway) and the same string is stored/returned as the cancel id.
-            thread.name = str(uuid.uuid4())
+            thread.name = posted_event.uuid
+
+            # Register the entry *before* starting the thread: a short-period
+            # posting could otherwise fire — and, once expired, try to remove
+            # its own entry — before the entry exists, leaving it behind
+            # forever.  This also means a posting that would overflow the
+            # registry is now rejected before its thread ever starts (it used
+            # to be started and then immediately told to shut down).
+            with self.posted_events_lock:
+                # If we have run out of spots in our queue we should issue an
+                # ActiveObjectOutOfPostedEventResources since it indicates a MAJOR design
+                # problem
+                if len(self.posted_events_queue) < self.__class__.QUEUE_SIZE:
+                    # track this thread in our posted_events deque
+                    self.posted_events_queue.append(posted_event)
+                else:
+                    # This could easily happen if the user creates posted_event items on
+                    # entry and doesn't cancel them upon exiting the same state (see
+                    # comment in this function's docstring)
+                    pp(self.posted_events_queue)
+                    raise (
+                        ActiveObjectOutOfPostedEventResources(
+                            "posted_events_queue size is too small for what you have asked for"
+                        )
+                    )
             thread.start()
-
-            # If we have run out of spots in our queue we should issue an
-            # ActiveObjectOutOfPostedEventResources since it indicates a MAJOR design
-            # problem
-            if len(self.posted_events_queue) < self.__class__.QUEUE_SIZE:
-                # track this thread in our posted_events deque
-                self.posted_events_queue.append(
-                    self.PostedEvent(
-                        e.signal_name,
-                        task_run_event,
-                        thread.name,
-                    )
-                )
-            else:
-                # Have the timer thread that we just constructed shut down (we
-                # can't manage it in our posted_events deque)
-
-                # This could easily happen if the user creates posted_event items on
-                # entry and doesn't cancel them upon exiting the same state (see
-                # comment in this function's docstring)
-                pp(self.posted_events_queue)
-                task_run_event.clear()
-                raise (
-                    ActiveObjectOutOfPostedEventResources(
-                        "posted_events_queue size is too small for what you have asked for"
-                    )
-                )
 
         return thread.name
 
@@ -1211,16 +1258,17 @@ class ActiveObject(HsmWithQueues):
 
         """
         # print("cancel uuid: {}".format(uuid))
-        for _ in reversed(range(len(self.posted_events_queue))):
-            posted_event_task_meta_data = self.posted_events_queue[-1]
-            if posted_event_task_meta_data.uuid is uuid:
-                # If this thread hasn't already finished, ask it to stop
-                posted_event_task_meta_data.task_run_event.clear()
-                # we aren't managing this thread anymore, remove it from our list
-                self.posted_events_queue.pop()
-                break
-            else:
-                self.posted_events_queue.rotate(1)
+        with self.posted_events_lock:
+            for _ in reversed(range(len(self.posted_events_queue))):
+                posted_event_task_meta_data = self.posted_events_queue[-1]
+                if posted_event_task_meta_data.uuid is uuid:
+                    # If this thread hasn't already finished, ask it to stop
+                    posted_event_task_meta_data.task_run_event.clear()
+                    # we aren't managing this thread anymore, remove it from our list
+                    self.posted_events_queue.pop()
+                    break
+                else:
+                    self.posted_events_queue.rotate(1)
 
     def cancel_events(self, e: _HasSignalName) -> None:
         """
@@ -1250,15 +1298,16 @@ class ActiveObject(HsmWithQueues):
           ao.cancel_events(Event(signal=signals.A))
         """
         # cancel all threads which could cause this event to take place
-        for _ in reversed(range(len(self.posted_events_queue))):
-            posted_event_task_meta_data = self.posted_events_queue[-1]
-            if posted_event_task_meta_data.signal_name is e.signal_name:
-                # If this thread hasn't already finished, ask it to stop
-                posted_event_task_meta_data.task_run_event.clear()
-                # we aren't managing this thread anymore, remove it from our list
-                self.posted_events_queue.pop()
-            else:
-                self.posted_events_queue.rotate(1)
+        with self.posted_events_lock:
+            for _ in reversed(range(len(self.posted_events_queue))):
+                posted_event_task_meta_data = self.posted_events_queue[-1]
+                if posted_event_task_meta_data.signal_name is e.signal_name:
+                    # If this thread hasn't already finished, ask it to stop
+                    posted_event_task_meta_data.task_run_event.clear()
+                    # we aren't managing this thread anymore, remove it from our list
+                    self.posted_events_queue.pop()
+                else:
+                    self.posted_events_queue.rotate(1)
 
     def register_live_spy_callback(
         self, live_spy_callback: Callable[[str], None]

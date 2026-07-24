@@ -533,3 +533,95 @@ def test_posting_too_many_events_will_raise_exception(fabric_fixture):
   assert(ao.a_signal > 0)
   ao.cancel_events(Event(signal=signals.A))
   assert(len(ao.posted_events_queue) is 0)
+
+
+def _wait_for_empty_posted_events_queue(ao, timeout=1.0):
+  '''Poll until the posted_events_queue is empty (the posting thread frees its
+  entry after it posts for the last time — a moment later than the post
+  itself); raise if it does not empty within the timeout.'''
+  deadline = time.monotonic() + timeout
+  while len(ao.posted_events_queue) != 0:
+    if time.monotonic() > deadline:
+      raise AssertionError(
+        "posted_events_queue never emptied; expired postings did not free "
+        "their tracking slots")
+    time.sleep(0.001)
+
+
+@pytest.mark.ao
+@pytest.mark.post_event
+def test_expired_one_shot_frees_its_posted_event_slot(fabric_fixture):
+  ao = ActiveObject()
+  ao.start_at(posted_event_snitch)
+  thread_id = ao.post_fifo(Event(signal=signals.F),
+      times=1,
+      period=0.05,
+      deferred=True)
+  assert(len(ao.posted_events_queue) == 1)
+  # let the one-shot fire and wind itself down
+  time.sleep(0.2)
+  assert(ao.f_signal == 1)
+  _wait_for_empty_posted_events_queue(ao)
+  # cancelling an already-expired posting stays a safe no-op
+  ao.cancel_event(thread_id)
+  assert(len(ao.posted_events_queue) == 0)
+
+
+@pytest.mark.ao
+@pytest.mark.post_event
+def test_expired_multi_shot_frees_its_posted_event_slot(fabric_fixture):
+  ao = ActiveObject()
+  ao.start_at(posted_event_snitch)
+  ao.post_lifo(Event(signal=signals.G),
+      times=3,
+      period=0.05,
+      deferred=False)
+  assert(len(ao.posted_events_queue) == 1)
+  time.sleep(0.4)
+  assert(ao.g_signal == 3)
+  _wait_for_empty_posted_events_queue(ao)
+
+
+@pytest.mark.ao
+@pytest.mark.post_event
+def test_forever_posting_keeps_its_slot_until_cancelled(fabric_fixture):
+  ao = ActiveObject()
+  ao.start_at(posted_event_snitch)
+  thread_id = ao.post_fifo(Event(signal=signals.A),
+      period=0.05,
+      deferred=False)
+  time.sleep(0.2)
+  # a forever posting (times=0) never expires, so it must keep its slot
+  assert(len(ao.posted_events_queue) == 1)
+  ao.cancel_event(thread_id)
+  assert(len(ao.posted_events_queue) == 0)
+
+
+@pytest.mark.ao
+@pytest.mark.post_event
+def test_expired_one_shots_do_not_exhaust_posted_event_slots(fabric_fixture):
+  '''Before expired postings freed their own tracking entries, every finished
+  one-shot permanently consumed one of the QUEUE_SIZE posted-event slots: a
+  long-lived chart could only ever use QUEUE_SIZE one-shots over its whole
+  life before __post_event raised ActiveObjectOutOfPostedEventResources from
+  whatever state handler happened to post next.  Prove a chart can now use
+  more one-shots than there are slots.'''
+  ao = ActiveObject()
+  ao.start_at(posted_event_snitch)
+  for i in range(ao.__class__.QUEUE_SIZE + 5):
+    ao.post_fifo(Event(signal=signals.B),
+        times=1,
+        period=0.001,
+        deferred=True)
+    # one posting in flight at a time; each must free its slot when it expires
+    _wait_for_empty_posted_events_queue(ao)
+  # a posting thread frees its tracking entry right after handing its last
+  # event to the chart's input queue, so the queue can be empty before the
+  # chart's own thread has dispatched that final event — poll for the count
+  # instead of asserting it immediately
+  deadline = time.monotonic() + 1.0
+  while ao.b_signal != ao.__class__.QUEUE_SIZE + 5:
+    if time.monotonic() > deadline:
+      break
+    time.sleep(0.001)
+  assert(ao.b_signal == ao.__class__.QUEUE_SIZE + 5)
