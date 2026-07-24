@@ -615,4 +615,13 @@ def test_expired_one_shots_do_not_exhaust_posted_event_slots(fabric_fixture):
         deferred=True)
     # one posting in flight at a time; each must free its slot when it expires
     _wait_for_empty_posted_events_queue(ao)
+  # a posting thread frees its tracking entry right after handing its last
+  # event to the chart's input queue, so the queue can be empty before the
+  # chart's own thread has dispatched that final event — poll for the count
+  # instead of asserting it immediately
+  deadline = time.monotonic() + 1.0
+  while ao.b_signal != ao.__class__.QUEUE_SIZE + 5:
+    if time.monotonic() > deadline:
+      break
+    time.sleep(0.001)
   assert(ao.b_signal == ao.__class__.QUEUE_SIZE + 5)
