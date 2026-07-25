@@ -1,0 +1,32 @@
+# Dependabot configuration. Full set of options:
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+#
+# No `target-branch` is set anywhere in this file, deliberately: Dependabot
+# security updates only run against the default branch, and GitHub disables them
+# for any ecosystem whose entries all set `target-branch`. Omitting it keeps both
+# version updates and security updates working against the default branch.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Dependency set declared in `pyproject.toml` (there is no lockfile in tree).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
